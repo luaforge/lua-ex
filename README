@@ -1,15 +1,26 @@
--- environment
+-- Environment
 os.environ
 os.setenv(name, value, overwrite)
 os.unsetenv(name)
 
--- miscellaneous
+-- Miscellaneous
 os.sleep(seconds)
 
--- file system
-os.dir
-file = os.file
+-- File system
+os.chdir(pathname)
+cwd = os.currentdir()
+os.mkdir(pathname)
 
--- process control
+for stat in os.dir(pathname) do ; end
+stat = os.stat(pathname)
+-- stat.name is the filename
+-- stat.type is one of "file" or "directory" or another implementation-defined string
+-- stat.size is the file size in bytes
+
+file = io.open("filename", "w")
+file:lock(mode, start, len) -- mode is "r" or "w"; start and len are optional
+file:unlock(start, len) -- start and len are optional
+
+-- Process control
 pid = os.spawn(filename, {args={}, env={}, stdin=io_file, stdout=io_file, stderr=io_file})
 exitcode = os.wait(pid)
