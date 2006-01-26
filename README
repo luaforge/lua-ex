@@ -1,6 +1,6 @@
 -- Environment
 os.environ
-os.setenv(name, value, overwrite)
+os.setenv(name, value)
 os.unsetenv(name)
 
 -- Miscellaneous
@@ -13,13 +13,16 @@ os.mkdir(pathname)
 
 for stat in os.dir(pathname) do ; end
 stat = os.stat(pathname)
--- stat.name is the filename
--- stat.type is one of "file" or "directory" or another implementation-defined string
--- stat.size is the file size in bytes
+--[[
+	stat is a table, contain at least the following keys:
+	name: the filename
+	type: "file" or "directory" or another implementation-defined string
+	size: the file size in bytes
+--]]
 
 file = io.open("filename", "w")
-file:lock(mode, start, len) -- mode is "r" or "w"; start and len are optional
-file:unlock(start, len) -- start and len are optional
+file:lock(mode, start, length) -- mode is "r" or "w", start and length are optional
+file:unlock(start, length) -- start and length are optional
 
 -- Process control
 pid = os.spawn(filename, {args={}, env={}, stdin=io_file, stdout=io_file, stderr=io_file})
