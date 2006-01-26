@@ -1,5 +1,5 @@
 -- Environment
-os.environ
+os.environ() -- returns a copy of the environment
 os.setenv(name, value)
 os.unsetenv(name)
 
@@ -25,5 +25,6 @@ file:lock(mode, start, length) -- mode is "r" or "w", start and length are optio
 file:unlock(start, length) -- start and length are optional
 
 -- Process control
-pid = os.spawn(filename, {args={}, env={}, stdin=io_file, stdout=io_file, stderr=io_file})
+pid = os.spawn(filename, {args={}, env={}, stdin=file, stdout=file, stderr=file})
+in, out = os.pipe() -- in and out are io.file objects
 exitcode = os.wait(pid)
