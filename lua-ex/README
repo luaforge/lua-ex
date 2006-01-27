@@ -1,7 +1,7 @@
 -- Environment
-os.environ() -- returns a copy of the environment
 os.setenv(name, value)
 os.unsetenv(name)
+os.environ() -- returns a copy of the environment
 
 -- Miscellaneous
 os.sleep(seconds)
@@ -14,17 +14,18 @@ os.mkdir(pathname)
 for stat in os.dir(pathname) do ; end
 stat = os.stat(pathname)
 --[[
-	stat is a table, contain at least the following keys:
+	stat is a table, containing at least the following keys:
 	name: the filename
 	type: "file" or "directory" or another implementation-defined string
 	size: the file size in bytes
 --]]
 
+-- Locking and pipes
 file = io.open("filename", "w")
 file:lock(mode, start, length) -- mode is "r" or "w", start and length are optional
 file:unlock(start, length) -- start and length are optional
+in, out = io.pipe()
 
 -- Process control
 pid = os.spawn(filename, {args={}, env={}, stdin=file, stdout=file, stderr=file})
-in, out = os.pipe() -- in and out are io.file objects
-exitcode = os.wait(pid)
+exitcode = pid:wait(pid)
