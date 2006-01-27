@@ -141,58 +141,88 @@ static int ex_currentdir(lua_State *L)
 	return 1;
 }
 
+static HANDLE get_handle(FILE *f)
+{
+	return (HANDLE)_get_osfhandle(fileno(f));
+}
 
 /* pathname -- iter state nil */
 static int ex_dir(lua_State *L) { return luaL_error(L, "not yet implemented"); }
 
 /* pathname -- entry */
+/* XXX io.file -- entry */
 static int ex_dirent(lua_State *L) { return luaL_error(L, "not yet implemented"); }
 
 
-static int file_lock(lua_State *L, FILE *fh, const char *mode, long start, long len)
+static int file_lock(lua_State *L, FILE *fh, const char *mode, long offset, long length)
+{
+	HANDLE h = get_handle(fh);
+	DWORD flags = LOCKFILE_FAIL_IMMEDIATELY;
+	LARGE_INTEGER len = {0};
+	OVERLAPPED ov = {0};
+	BOOL ret;
+	if (length)
+		len.LowPart = length;
+	else
+		len.LowPart = GetFileSize(h, &len.HighPart);
+	ov.Offset = offset;
+	switch (*mode) {
+		case 'r': break;
+		case 'w': flags |= LOCKFILE_EXCLUSIVE_LOCK; break;
+		case 'u': flags = 0; break;
+		default: return luaL_error(L, "invalid mode");
+	}
+	if (flags)
+		ret = LockFileEx(h, flags, 0, len.LowPart, len.HighPart, &ov);
+	else
+		ret = UnlockFileEx(h, 0, len.LowPart, len.HighPart, &ov);
+	if (!ret)
+		return windows_error(L);
+	lua_pushboolean(L, 1);
+	return 1;
+}
+
+static int file_lock_crt(lua_State *L, FILE *fh, const char *mode, long offset, long length)
 {
 	int code;
     int lkmode;
     switch (*mode) {
-        case 'r': lkmode = LK_NBLCK; break;
+        case 'r': lkmode = LK_NBRLCK; break;
         case 'w': lkmode = LK_NBLCK; break;
         case 'u': lkmode = LK_UNLCK; break;
         default : return luaL_error (L, "invalid mode");
     }
-    if (!len) {
+    if (!length) {
         fseek (fh, 0L, SEEK_END);
-        len = ftell (fh);
+        length = ftell (fh);
     }
-    fseek (fh, start, SEEK_SET);
-    code = _locking (fileno(fh), lkmode, len);
+    fseek (fh, offset, SEEK_SET);
+    code = _locking (fileno(fh), lkmode, length);
     if (code == -1) {
         lua_pushboolean(L, 0);
         lua_pushstring(L, strerror(errno));
         return 2;
     }
-    else {
-        lua_pushboolean(L, 1);
-        return 1;
-    }
+	lua_pushboolean(L, 1);
+	return 1;
 }
 
-/* file mode [start [length]] -- true/nil error */
+/* file mode [offset [length]] -- true/nil error */
 static int ex_lock(lua_State *L)
 {
-	FILE *f = luaL_checkuserdata(L, 1, LUA_FILEHANDLE);
+	FILE **pf = luaL_checkuserdata(L, 1, LUA_FILEHANDLE);
 	const char *mode = luaL_checkstring(L, 2);
-	long start = luaL_optnumber(L, 3, 0);
+	long offset = luaL_optnumber(L, 3, 0);
 	long length = luaL_optnumber(L, 4, 0);
-	return file_lock(L, f, mode, start, length);
+	return file_lock(L, *pf, mode, offset, length);
 }
 
-/* file [start [length]] -- true/nil error */
+/* file [offset [length]] -- true/nil error */
 static int ex_unlock(lua_State *L)
 {
-	FILE *f = luaL_checkuserdata(L, 1, LUA_FILEHANDLE);
-	long start = luaL_optnumber(L, 2, 0);
-	long length = luaL_optnumber(L, 3, 0);
-	return file_lock(L, f, "u", start, length);
+	lua_pushliteral(L, "u");
+	lua_insert(L, 2);
+	return ex_lock(L);
 }
 
 
@@ -269,7 +299,7 @@ static void get_redirect(lua_State *L, const char *stream, HANDLE *handle)
 	lua_getfield(L, 2, stream);
 	if (!lua_isnil(L, -1)) {
 		FILE **pf = luaL_checkuserdata(L, -1, LUA_FILEHANDLE);
-		*handle = (HANDLE)_get_osfhandle(_fileno(*pf));
+		*handle = get_handle(*pf);
 	}
 	lua_pop(L, 1);
 }
