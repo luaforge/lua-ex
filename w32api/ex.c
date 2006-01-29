@@ -254,7 +254,7 @@ static const char *concat_args(lua_State *L)
 	for (i = 1; i <= n; i++) {
 		int quote;
 		lua_rawgeti(L, -1, i);         /* ... argtab arg */
-		/* XXX checkstring is wrong here */
+		/* XXX checkstring is confusing here */
 		quote = needs_quoting(luaL_checkstring(L, -1));
 		luaL_putchar(&args, ' ');
 		if (quote) luaL_putchar(&args, '"');
@@ -274,7 +274,7 @@ static const char *concat_env(lua_State *L)
 	luaL_buffinit(L, &env);
 	lua_pushnil(L);                /* ... envtab nil */
 	while (lua_next(L, -2)) {      /* ... envtab k v */
-		/* XXX luaL_checktype is wrong here */
+		/* XXX luaL_checktype is confusing here */
 		luaL_checktype(L, -2, LUA_TSTRING);
 		luaL_checktype(L, -1, LUA_TSTRING);
 		lua_pushvalue(L, -2);      /* ... envtab k v k */
@@ -297,7 +297,7 @@ static int get_redirect(lua_State *L, const char *stdname, HANDLE *ph)
 	int ret;
 	lua_getfield(L, 2, stdname);
 	if ((ret = !lua_isnil(L, -1))) {
-		/* XXX checkuserdata is wrong here */
+		/* XXX checkuserdata is confusing here */
 		FILE **pf = luaL_checkuserdata(L, -1, LUA_FILEHANDLE);
 		*ph = get_handle(*pf);
 	}
@@ -330,10 +330,11 @@ static int ex_spawn(lua_State *L)
 		}
 		else {
 			/* convert {arg0,arg1,...} to arg0 {arg1,...} */
-			int i, n = lua_objlen(L, 1);
+			size_t i, n = lua_objlen(L, 1);
 			lua_rawgeti(L, 1, 1);                  /* opts nil cmd */
 			if (lua_isnil(L, -1))
 				luaL_error(L, "no command specified");
+			/* XXX check LUA_TSTRING */
 			lua_insert(L, 1);                      /* cmd opts nil */
 			for (i = 2; i <= n; i++) {
 				lua_rawgeti(L, 2, i);              /* cmd opts nil argi */
@@ -344,6 +345,7 @@ static int ex_spawn(lua_State *L)
 	}
 
 	/* get command */
+	/* XXX luaL_checkstring is confusing here */
 	cmdline = luaL_checkstring(L, 1);
 	if (needs_quoting(cmdline)) {
 		lua_pushliteral(L, "\"");          /* cmd ... q */
@@ -368,12 +370,12 @@ static int ex_spawn(lua_State *L)
 		switch (lua_type(L, -1)) {
 		default: luaL_error(L, "args option must be an array"); break;
 		case LUA_TNIL:
-			lua_pop(L, 1);                         /* cmd opts */
+			lua_pop(L, 1);                         /* cmd opts ... */
 			if (lua_objlen(L, 2) == 0) break;
 			lua_pushvalue(L, 2);                   /* cmd opts ... opts */
-			if (0)/*FALLTHRU*/
+			if (0) /*FALLTHRU*/
 		case LUA_TTABLE:
-			if (lua_objlen(L, -1) > 0)
+			if (lua_objlen(L, 2) > 0)
 				luaL_error(L, "cannot specify both the args option and array values");
 			concat_args(L);                        /* cmd opts ... argstr */
 			lua_pushvalue(L, 1);                   /* cmd opts ... argstr cmd */
@@ -398,6 +400,7 @@ static int ex_spawn(lua_State *L)
 			si.dwFlags = STARTF_USESTDHANDLES;
 		break;
 	}
+
 	p = lua_newuserdata(L, sizeof *p);             /* cmd opts ... proc */
 	luaL_getmetatable(L, PROCESS_HANDLE);          /* cmd opts ... proc M */
 	lua_setmetatable(L, -2);                       /* cmd opts ... proc */
