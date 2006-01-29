@@ -3,6 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
+#include <assert.h>
 
 #include <lua.h>
 #include <lualib.h>
@@ -10,8 +11,15 @@
 
 #include <unistd.h>
 #include <fcntl.h>
-#include "spawn.h"
+#include <spawn.h>
 #include <sys/wait.h>
+
+extern char **environ;
+
+#define debug(...) fprintf(stderr,__VA_ARGS__)
+#define Dposix_spawnp(ppid,cmd,act,attrp,argv,envp) \
+	(debug("posix_spawnp(%p,\"%s\",%p,%p,%p,%p)\n",(void*)ppid,cmd,(void*)act,(void*)attrp,(void*)argv,(void*)envp),\
+	posix_spawnp(ppid,cmd,act,attrp,argv,envp))
 
 
 /* Generally useful function -- what luaL_checkudata() should do */
@@ -227,14 +235,16 @@ static const char **build_env(lua_State *L)
 	return build_args(L);              /* ... */
 }
 
-static void get_redirect(lua_State *L, posix_spawn_file_actions_t *file_actions,
+static int get_redirect(lua_State *L, posix_spawn_file_actions_t *file_actions,
 	const char *stream, int descriptor)
 {
+	int ret;
 	lua_getfield(L, 2, stream);
-	if (!lua_isnil(L, -1))
+	if ((ret = !lua_isnil(L, -1)))
 		posix_spawn_file_actions_adddup2(file_actions, 
 			fileno(luaL_checkudata(L, -1, LUA_FILEHANDLE)), descriptor);
 	lua_pop(L, 1);
+	return ret;
 }
 
 #define PROCESS_HANDLE "process"
@@ -248,10 +258,10 @@ struct process {
 static int ex_spawn(lua_State *L)
 {
 	const char *command;
-	posix_spawn_file_actions_t file_actions;
 	const char **argv;
 	const char **envp;
-	struct process *p;
+	posix_spawn_file_actions_t file_actions, *pactions = 0;
+	struct process *proc;
 	int ret;
 
 	if (lua_type(L, 1) == LUA_TTABLE) {
@@ -279,15 +289,16 @@ static int ex_spawn(lua_State *L)
 	/* XXX confusing */
 	command = luaL_checkstring(L, 1);
 
-	/* set defaults */
-	argv = 0;
-	envp = (const char **)environ;
-	posix_spawn_file_actions_init(&file_actions);
-
 	/* get arguments, environment, and redirections */
 	switch (lua_type(L, 2)) {
 	default: luaL_argerror(L, 2, "expected options table"); break;
-	case LUA_TNONE: break;
+	case LUA_TNONE:
+		argv = lua_newuserdata(L, 2 * sizeof *argv);
+		argv[0] = command;
+		argv[1] = 0;
+		envp = (const char **)environ;
+		pactions = 0;
+		break;
 	case LUA_TTABLE:
 		lua_getfield(L, 2, "args");                /* cmd opts ... argtab */
 		switch (lua_type(L, -1)) {
@@ -301,25 +312,40 @@ static int ex_spawn(lua_State *L)
 				luaL_error(L, "cannot specify both the args option and array values");
 			argv = build_args(L);                  /* cmd opts ... */
 			if (!argv[0]) argv[0] = command;
+			break;
 		}
 		lua_getfield(L, 2, "env");
 		switch (lua_type(L, -1)) {
 		default: luaL_error(L, "env option must be a table"); break;
-		case LUA_TNIL: break;
+		case LUA_TNIL:
+			envp = (const char **)environ;
+			break;
 		case LUA_TTABLE:
 			envp = build_env(L);                   /* cmd opts ... */
+			break;
 		}
-		get_redirect(L, &file_actions, "stdin", STDIN_FILENO);
-		get_redirect(L, &file_actions, "stdout", STDOUT_FILENO);
-		get_redirect(L, &file_actions, "stderr", STDERR_FILENO);
+		posix_spawn_file_actions_init(&file_actions);
+		if (get_redirect(L, &file_actions, "stdin", STDIN_FILENO)
+		    | get_redirect(L, &file_actions, "stdout", STDOUT_FILENO)
+		    | get_redirect(L, &file_actions, "stderr", STDERR_FILENO)) {
+			pactions = &file_actions;
+		}
+		else {
+			posix_spawn_file_actions_destroy(&file_actions);
+			pactions = 0;
+		}
 	}
-	p = lua_newuserdata(L, sizeof *p);             /* cmd opts ... proc */
+	proc = lua_newuserdata(L, sizeof *proc);       /* cmd opts ... proc */
 	luaL_getmetatable(L, PROCESS_HANDLE);          /* cmd opts ... proc M */
 	lua_setmetatable(L, -2);                       /* cmd opts ... proc */
-	p->status = -1;
-	ret = posix_spawnp(&p->pid, command, &file_actions, 0, (char *const *)argv, (char *const *)envp);
-	posix_spawn_file_actions_destroy(&file_actions);
-	if (-1 == ret)
+	proc->status = -1;
+	assert(argv && argv[0]);
+	assert(envp && envp[0]);
+	ret = Dposix_spawnp(&proc->pid, command, pactions, 0, (char *const *)argv, (char *const *)envp);
+	debug("returns %d:%ld\n", ret, (long)proc->pid);
+	if (pactions)
+		posix_spawn_file_actions_destroy(pactions);
+	if (0 != ret)
 		return posix_error(L);
 	return 1; /* ... proc */
 }
@@ -328,9 +354,10 @@ static int ex_spawn(lua_State *L)
 static int process_wait(lua_State *L)
 {
 	struct process *p = luaL_checkudata(L, 1, PROCESS_HANDLE);
-	if (p->status != -1) {
+	if (p->status == -1) {
 		int status;
-		waitpid(p->pid, &status, 0);
+		if (-1 == waitpid(p->pid, &status, 0))
+			return posix_error(L);
 		p->status = WEXITSTATUS(status);
 	}
 	lua_pushnumber(L, p->status);
