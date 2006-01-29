@@ -12,6 +12,8 @@
 #include <fcntl.h>
 #include <sys/locking.h>
 
+#define debug(...) fprintf(stderr,__VA_ARGS__)
+
 
 /* Generally useful function -- what luaL_checkudata() should do */
 static void *luaL_checkuserdata(lua_State *L, int idx, const char *tname)
@@ -409,7 +411,7 @@ static int ex_spawn(lua_State *L)
 	/* XXX does CreateProcess modify its environment argument? */
 	cmdline = strdup(cmdline);
 	if (environment) environment = strdup(environment);
-	fprintf(stderr, "CreateProcess(%s)\n", cmdline);
+	debug("CreateProcess(%s)\n", cmdline);
 	ret = CreateProcess(0, (char *)cmdline, 0, 0, 0, 0, (char *)environment, 0, &si, &pi);
 //	if (environment) free((char *)environment);
 //	free((char *)cmdline);
@@ -424,7 +426,7 @@ static int ex_spawn(lua_State *L)
 static int process_wait(lua_State *L)
 {
 	struct process *p = luaL_checkuserdata(L, 1, PROCESS_HANDLE);
-	if (p->status != -1) {
+	if (p->status == -1) {
 		DWORD exitcode;
 		WaitForSingleObject(p->hProcess, INFINITE);
 		GetExitCodeProcess(p->hProcess, &exitcode);
