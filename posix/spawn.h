@@ -2,7 +2,7 @@
 #include <signal.h>
 #include <sys/types.h>
 
-typedef struct posix_spawnattr posix_spawnattr_t;
+typedef void *posix_spawnattr_t;
 
 enum {
 	POSIX_SPAWN_RESETIDS,
@@ -29,6 +29,9 @@ int posix_spawnattr_setsigmask(posix_spawnattr_t *restrict attrp, const sigset_t
 int posix_spawnattr_destroy(posix_spawnattr_t *attrp);
 
 typedef struct posix_spawn_file_actions posix_spawn_file_actions_t;
+struct posix_spawn_file_actions {
+	int dups[3];
+};
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *file_actions);
 int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *file_actions, int filedes, int newfiledes);

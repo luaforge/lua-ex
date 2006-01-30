@@ -14,12 +14,7 @@
 #include <spawn.h>
 #include <sys/wait.h>
 
-extern char **environ;
-
 #define debug(...) fprintf(stderr,__VA_ARGS__)
-#define Dposix_spawnp(ppid,cmd,act,attrp,argv,envp) \
-	(debug("posix_spawnp(%p,\"%s\",%p,%p,%p,%p)\n",(void*)ppid,cmd,(void*)act,(void*)attrp,(void*)argv,(void*)envp),\
-	posix_spawnp(ppid,cmd,act,attrp,argv,envp))
 
 
 /* Generally useful function -- what luaL_checkudata() should do */
@@ -76,8 +71,8 @@ static int ex_unsetenv(lua_State *L)
 /* -- environment-table */
 static int ex_environ(lua_State *L)
 {
-	char **env;
 	const char *nam, *val, *end;
+	const char **env;
 	lua_newtable(L);
 	for (env = environ; (nam = *env); env++) {
 		end = strchr(val = strchr(nam, '=') + 1, '\0');
@@ -235,11 +230,12 @@ static const char **build_env(lua_State *L)
 	return build_args(L);              /* ... */
 }
 
+/* */
 static int get_redirect(lua_State *L, posix_spawn_file_actions_t *file_actions,
-	const char *stream, int descriptor)
+	const char *stdname, int descriptor)
 {
 	int ret;
-	lua_getfield(L, 2, stream);
+	lua_getfield(L, 2, stdname);
 	if ((ret = !lua_isnil(L, -1)))
 		posix_spawn_file_actions_adddup2(file_actions, 
 			fileno(luaL_checkudata(L, -1, LUA_FILEHANDLE)), descriptor);
@@ -272,7 +268,7 @@ static int ex_spawn(lua_State *L)
 		}
 		else {
 			/* convert {arg0,arg1,...} to arg0 {arg1,...} */
-			int i, n = lua_objlen(L, 1);
+			size_t i, n = lua_objlen(L, 1);
 			lua_rawgeti(L, 1, 1);                  /* opts ... nil cmd */
 			if (lua_isnil(L, -1))
 				luaL_error(L, "no command specified");
@@ -341,7 +337,7 @@ static int ex_spawn(lua_State *L)
 	proc->status = -1;
 	assert(argv && argv[0]);
 	assert(envp && envp[0]);
-	ret = Dposix_spawnp(&proc->pid, command, pactions, 0, (char *const *)argv, (char *const *)envp);
+	ret = posix_spawnp(&proc->pid, command, pactions, 0, (char *const *)argv, (char *const *)envp);
 	debug("returns %d:%ld\n", ret, (long)proc->pid);
 	if (pactions)
 		posix_spawn_file_actions_destroy(pactions);
