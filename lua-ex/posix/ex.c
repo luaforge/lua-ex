@@ -3,7 +3,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <errno.h>
-#include <assert.h>
+#include <limits.h>
 
 #include <lua.h>
 #include <lualib.h>
@@ -13,8 +13,6 @@
 #include <fcntl.h>
 #include <spawn.h>
 #include <sys/wait.h>
-
-#define debug(...) fprintf(stderr,__VA_ARGS__)
 
 
 /* Generally useful function -- what luaL_checkudata() should do */
@@ -27,7 +25,7 @@ static void *luaL_checkuserdata(lua_State *L, int idx, const char *tname)
 
 
 /* -- nil error */
-static int posix_error(lua_State *L)
+static int push_error(lua_State *L)
 {
 	lua_pushnil(L);
 	lua_pushstring(L, strerror(errno));
@@ -53,7 +51,7 @@ static int ex_setenv(lua_State *L)
 	const char *nam = luaL_checkstring(L, 1);
 	const char *val = luaL_checkstring(L, 2);
 	if (-1 == setenv(nam, val, 1))
-		return posix_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -63,7 +61,7 @@ static int ex_unsetenv(lua_State *L)
 {
 	const char *nam = luaL_checkstring(L, 1);
 	if (-1 == unsetenv(nam))
-		return posix_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -74,7 +72,7 @@ static int ex_environ(lua_State *L)
 	const char *nam, *val, *end;
 	const char **env;
 	lua_newtable(L);
-	for (env = environ; (nam = *env); env++) {
+	for (env = (const char **)environ; (nam = *env); env++) {
 		end = strchr(val = strchr(nam, '=') + 1, '\0');
 		lua_pushlstring(L, nam, val - nam - 1);
 		lua_pushlstring(L, val, end - val);
@@ -98,7 +96,7 @@ static int ex_chdir(lua_State *L)
 {
 	const char *pathname = luaL_checkstring(L, 1);
 	if (-1 == chdir(pathname))
-		return posix_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -108,7 +106,7 @@ static int ex_mkdir(lua_State *L)
 {
 	const char *pathname = luaL_checkstring(L, 1);
 	if (-1 == mkdir(pathname, 0777))
-		return posix_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -118,7 +116,7 @@ static int ex_currentdir(lua_State *L)
 {
 	char pathname[PATH_MAX + 1];
 	if (!getcwd(pathname, sizeof pathname))
-		return posix_error(L);
+		return push_error(L);
 	lua_pushstring(L, pathname);
 	return 1;
 }
@@ -143,7 +141,7 @@ static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long 
 	k.l_start = offset;
 	k.l_len = length;
 	if (-1 == fcntl(fileno(f), F_SETLK, &k))
-		return posix_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -186,51 +184,87 @@ static int ex_pipe(lua_State *L)
 {
 	int fd[2];
 	if (-1 == pipe(fd))
-		return posix_error(L);
+		return push_error(L);
 	return make_pipe(L, fdopen(fd[0], "r"), fdopen(fd[1], "w"));
 }
 
 
 /* ... argtab -- ... */
-static const char **build_args(lua_State *L)
+static const char **build_vector(lua_State *L)
 {
 	size_t i, n = lua_objlen(L, -1);
-	const char **argv = lua_newuserdata(L, (n + 2) * sizeof *argv);
-	                                   /* ... argtab argv */
+	const char **vec = lua_newuserdata(L, (n + 2) * sizeof *vec);
+	                                   /* ... arr vec */
 	for (i = 0; i <= n; i++) {
-		lua_rawgeti(L, -2, i);         /* ... argtab argv argi */
-		argv[i] = lua_tostring(L, -1);
-		lua_pop(L, 1);                 /* ... argtab argv */
+		lua_rawgeti(L, -2, i);         /* ... arr vec elem */
+		vec[i] = lua_tostring(L, -1);
+		lua_pop(L, 1);                 /* ... arr vec */
 	}
-	argv[n + 1] = 0;
-	lua_replace(L, -2);                /* ... argv */
-	return argv;
+	vec[n + 1] = 0;
+	lua_replace(L, -2);                /* ... vector */
+	return vec;
 }
 
-/* ... envtab -- */
-static const char **build_env(lua_State *L)
+struct spawn_params {
+	lua_State *L;
+	const char *command, **argv, **envp;
+	posix_spawn_file_actions_t file_actions;
+	int has_actions;
+};
+
+/* filename ... */
+static void spawn_param_filename(struct spawn_params *p)
+{
+	/* XXX confusing */
+	p->command = luaL_checkstring(p->L, 1);
+}
+
+
+static void spawn_param_defaults(struct spawn_params *p)
+{
+	p->argv = lua_newuserdata(p->L, 2 * sizeof *p->argv);
+	p->argv[0] = p->command;
+	p->argv[1] = 0;
+	p->envp = (const char **)environ;
+	p->has_actions = 0;
+}
+
+/* ... argtab */
+static void spawn_param_args(struct spawn_params *p)
+{
+	const char **argv = build_vector(p->L);
+	if (!argv[0]) argv[0] = p->command;
+	p->argv = argv;
+}
+
+/* ... envtab/nil */
+static void spawn_param_env(struct spawn_params *p)
 {
 	size_t i = 0;
 	luaL_Buffer estr;
-	luaL_buffinit(L, &estr);
-	lua_newtable(L);                   /* ... envtab a */
-	lua_pushnil(L);                    /* ... envtab a nil */
-	for (i = 0; lua_next(L, -3); i++) {/* ... envtab a k v */
+	if (lua_isnil(p->L, -1)) {
+		p->envp = (const char **)environ;
+		return;
+	}
+	luaL_buffinit(p->L, &estr);
+	lua_newtable(p->L);                    /* ... envtab arr */
+	lua_pushnil(p->L);                     /* ... envtab arr nil */
+	for (i = 0; lua_next(p->L, -3); i++) { /* ... envtab arr k v */
 		luaL_prepbuffer(&estr);
-		lua_pushvalue(L, -2);          /* ... envtab a k v k */
+		lua_pushvalue(p->L, -2);           /* ... envtab arr k v k */
 		luaL_addvalue(&estr);
 		luaL_putchar(&estr, '=');
-		lua_pop(L, 1);                 /* ... envtab a k v */
+		lua_pop(p->L, 1);                  /* ... envtab arr k v */
 		luaL_addvalue(&estr);
-		lua_pop(L, 1);                 /* ... envtab a k */
-		luaL_pushresult(&estr);        /* ... envtab a k estr */
-		lua_rawseti(L, -3, i);         /* ... envtab a[n]=estr k */
-	}                                  /* ... envtab a */
-	lua_replace(L, -2);                /* ... a */
-	return build_args(L);              /* ... */
+		lua_pop(p->L, 1);                  /* ... envtab arr k */
+		luaL_pushresult(&estr);            /* ... envtab arr k estr */
+		lua_rawseti(p->L, -3, i);          /* ... envtab arr[n]=estr k */
+	}                                      /* ... envtab arr */
+	lua_replace(p->L, -2);                 /* ... arr */
+	build_vector(p->L);                    /* ... arr */
 }
 
-/* */
+/* _ opts ... */
 static int get_redirect(lua_State *L, posix_spawn_file_actions_t *file_actions,
 	const char *stdname, int descriptor)
 {
@@ -243,22 +277,38 @@ static int get_redirect(lua_State *L, posix_spawn_file_actions_t *file_actions,
 	return ret;
 }
 
+/* _ opts ... */
+static void spawn_param_redirects(struct spawn_params *p)
+{
+	posix_spawn_file_actions_init(&p->file_actions);
+	p->has_actions = 1;
+	get_redirect(p->L, &p->file_actions, "stdin", STDIN_FILENO);
+	get_redirect(p->L, &p->file_actions, "stdout", STDOUT_FILENO);
+	get_redirect(p->L, &p->file_actions, "stderr", STDERR_FILENO);
+}
+
 #define PROCESS_HANDLE "process"
 struct process {
-	pid_t pid;
 	int status;
+	pid_t pid;
 };
+
+static int spawn_param_execute(struct spawn_params *p, struct process *proc)
+{
+	int ret;
+	proc->status = -1;
+	ret = posix_spawnp(&proc->pid, p->command, &p->file_actions, 0, (char *const *)p->argv, (char *const *)p->envp);
+	if (p->has_actions)
+		posix_spawn_file_actions_destroy(&p->file_actions);
+	return ret == 0;
+}
 
 /* filename [args-opts] -- true/nil,error */
 /* args-opts -- true/nil,error */
 static int ex_spawn(lua_State *L)
 {
-	const char *command;
-	const char **argv;
-	const char **envp;
-	posix_spawn_file_actions_t file_actions, *pactions = 0;
+	struct spawn_params params = {L};
 	struct process *proc;
-	int ret;
 
 	if (lua_type(L, 1) == LUA_TTABLE) {
 		lua_getfield(L, 1, "command");             /* opts ... cmd */
@@ -282,18 +332,14 @@ static int ex_spawn(lua_State *L)
 		}
 	}
 
-	/* XXX confusing */
-	command = luaL_checkstring(L, 1);
+	/* get filename to execute */
+	spawn_param_filename(&params);
 
 	/* get arguments, environment, and redirections */
 	switch (lua_type(L, 2)) {
 	default: luaL_argerror(L, 2, "expected options table"); break;
 	case LUA_TNONE:
-		argv = lua_newuserdata(L, 2 * sizeof *argv);
-		argv[0] = command;
-		argv[1] = 0;
-		envp = (const char **)environ;
-		pactions = 0;
+		spawn_param_defaults(&params);
 		break;
 	case LUA_TTABLE:
 		lua_getfield(L, 2, "args");                /* cmd opts ... argtab */
@@ -306,43 +352,24 @@ static int ex_spawn(lua_State *L)
 		case LUA_TTABLE:
 			if (lua_objlen(L, 2) > 0)
 				luaL_error(L, "cannot specify both the args option and array values");
-			argv = build_args(L);                  /* cmd opts ... */
-			if (!argv[0]) argv[0] = command;
+			spawn_param_args(&params);             /* cmd opts ... */
 			break;
 		}
-		lua_getfield(L, 2, "env");
+		lua_getfield(L, 2, "env");                 /* cmd opts ... envtab */
 		switch (lua_type(L, -1)) {
 		default: luaL_error(L, "env option must be a table"); break;
 		case LUA_TNIL:
-			envp = (const char **)environ;
-			break;
 		case LUA_TTABLE:
-			envp = build_env(L);                   /* cmd opts ... */
+			spawn_param_env(&params);              /* cmd opts ... */
 			break;
 		}
-		posix_spawn_file_actions_init(&file_actions);
-		if (get_redirect(L, &file_actions, "stdin", STDIN_FILENO)
-		    | get_redirect(L, &file_actions, "stdout", STDOUT_FILENO)
-		    | get_redirect(L, &file_actions, "stderr", STDERR_FILENO)) {
-			pactions = &file_actions;
-		}
-		else {
-			posix_spawn_file_actions_destroy(&file_actions);
-			pactions = 0;
-		}
+		spawn_param_redirects(&params);
 	}
 	proc = lua_newuserdata(L, sizeof *proc);       /* cmd opts ... proc */
 	luaL_getmetatable(L, PROCESS_HANDLE);          /* cmd opts ... proc M */
 	lua_setmetatable(L, -2);                       /* cmd opts ... proc */
-	proc->status = -1;
-	assert(argv && argv[0]);
-	assert(envp && envp[0]);
-	ret = posix_spawnp(&proc->pid, command, pactions, 0, (char *const *)argv, (char *const *)envp);
-	debug("returns %d:%ld\n", ret, (long)proc->pid);
-	if (pactions)
-		posix_spawn_file_actions_destroy(pactions);
-	if (0 != ret)
-		return posix_error(L);
+	if (!spawn_param_execute(&params, proc))
+		return push_error(L);
 	return 1; /* ... proc */
 }
 
@@ -353,7 +380,7 @@ static int process_wait(lua_State *L)
 	if (p->status == -1) {
 		int status;
 		if (-1 == waitpid(p->pid, &status, 0))
-			return posix_error(L);
+			return push_error(L);
 		p->status = WEXITSTATUS(status);
 	}
 	lua_pushnumber(L, p->status);
