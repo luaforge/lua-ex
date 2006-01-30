@@ -12,8 +12,6 @@
 #include <fcntl.h>
 #include <sys/locking.h>
 
-#define debug(...) fprintf(stderr,__VA_ARGS__)
-
 
 /* Generally useful function -- what luaL_checkudata() should do */
 static void *luaL_checkuserdata(lua_State *L, int idx, const char *tname)
@@ -25,7 +23,7 @@ static void *luaL_checkuserdata(lua_State *L, int idx, const char *tname)
 
 
 /* -- nil error */
-static int windows_error(lua_State *L)
+static int push_error(lua_State *L)
 {
 	DWORD error = GetLastError();
 	char buffer[1024];
@@ -54,7 +52,7 @@ static int ex_getenv(lua_State *L)
 	size_t len;
 	len = GetEnvironmentVariable(nam, val, sizeof val);
 	if (sizeof val < len)
-		return windows_error(L);
+		return push_error(L);
 	else if (len == 0)
 		lua_pushnil(L);
 	else
@@ -68,7 +66,7 @@ static int ex_setenv(lua_State *L)
 	const char *nam = luaL_checkstring(L, 1);
 	const char *val = luaL_checkstring(L, 2);
 	if (!SetEnvironmentVariable(nam, val))
-		return windows_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -78,7 +76,7 @@ static int ex_unsetenv(lua_State *L)
 {
 	const char *nam = luaL_checkstring(L, 1);
 	if (!SetEnvironmentVariable(nam, 0))
-		return windows_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -89,13 +87,11 @@ static int ex_environ(lua_State *L)
 	const char *nam, *val, *end;
 	const char *envs;
 	if (!(envs = GetEnvironmentStrings()))
-		return windows_error(L);
+		return push_error(L);
 	lua_newtable(L);
 	for (nam = envs; *nam; nam = end + 1) {
-		val = strchr(nam, '=');
-		end = strchr(val, '\0');
-		lua_pushlstring(L, nam, val - nam);
-		val++;
+		end = strchr(val = strchr(nam, '=') + 1, '\0');
+		lua_pushlstring(L, nam, val - nam - 1);
 		lua_pushlstring(L, val, end - val);
 		lua_settable(L, -3);
 	}
@@ -117,7 +113,7 @@ static int ex_chdir(lua_State *L)
 {
 	const char *pathname = luaL_checkstring(L, 1);
 	if (!SetCurrentDirectory(pathname))
-		return windows_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -127,7 +123,7 @@ static int ex_mkdir(lua_State *L)
 {
 	const char *pathname = luaL_checkstring(L, 1);
 	if (!CreateDirectory(pathname, 0))
-		return windows_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -138,7 +134,7 @@ static int ex_currentdir(lua_State *L)
 	char pathname[PATH_MAX + 1];
 	size_t len;
 	if (!(len = GetCurrentDirectory(sizeof pathname, pathname)))
-		return windows_error(L);
+		return push_error(L);
 	lua_pushlstring(L, pathname, len);
 	return 1;
 }
@@ -174,7 +170,7 @@ static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long 
 	ret = flags ? LockFileEx(h, flags, 0, len.LowPart, len.HighPart, &ov)
 		: UnlockFileEx(h, 0, len.LowPart, len.HighPart, &ov);
 	if (!ret)
-		return windows_error(L);
+		return push_error(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -217,15 +213,44 @@ static int ex_pipe(lua_State *L)
 {
 	HANDLE ph[2];
 	if (0 == CreatePipe(ph+0, ph+1, 0, 0))
-		return windows_error(L);
+		return push_error(L);
 	return make_pipe(L,
 		 _fdopen(_open_osfhandle((long)ph[0], _O_RDONLY), "r"),
 		 _fdopen(_open_osfhandle((long)ph[1], _O_WRONLY), "w"));
 }
 
+struct spawn_params {
+	lua_State *L;
+	const char *cmdline;
+	const char *environment;
+	STARTUPINFO si;
+};
+
 static int needs_quoting(const char *s)
 {
 	return s[0] != '"' && strchr(s, ' ');
+}
+
+/* filename ... */
+static void spawn_param_filename(struct spawn_params *p)
+{
+	/* XXX luaL_checkstring is confusing here */
+	p->cmdline = luaL_checkstring(p->L, 1);
+	if (needs_quoting(p->cmdline)) {
+		lua_pushliteral(p->L, "\"");   /* cmd ... q */
+		lua_pushvalue(p->L, 1);        /* cmd ... q cmd */
+		lua_pushvalue(p->L, -2);       /* cmd ... q cmd q */
+		lua_concat(p->L, 3);           /* cmd ... "cmd" */
+		lua_replace(p->L, 1);          /* "cmd" ... */
+	}
+}
+
+/* -- */
+static void spawn_param_default(struct spawn_params *p)
+{
+	p->environment = 0;
+	memset(&p->si, 0, sizeof p->si);
+	p->si.cb = sizeof p->si;
 }
 
 /* {arg1,arg 2} => " arg1 \"arg2\"" */
@@ -248,6 +273,16 @@ static const char *concat_args(lua_State *L)
 	lua_pop(L, 1);                     /* ... */
 	luaL_pushresult(&args);            /* ... argstr */
 	return lua_tostring(L, -1);
+}
+
+/* cmd opts ... argtab */
+static void spawn_param_args(struct spawn_params *p)
+{
+	concat_args(p->L);                     /* cmd opts ... argstr */
+	lua_pushvalue(p->L, 1);                /* cmd opts ... argstr cmd */
+	lua_replace(p->L, -2);                 /* cmd opts ... cmd argstr */
+	lua_concat(p->L, 2);                   /* cmd opts ... cmdline */
+	p->cmdline = lua_tostring(p->L, -1);
 }
 
 /* {nam1=val1,nam2=val2} => "nam1=val1\0nam2=val2\0" */
@@ -274,7 +309,19 @@ static const char *concat_env(lua_State *L)
 	return lua_tostring(L, -1);
 }
 
-/* XXX document me */
+/* ... envtab */
+static void spawn_param_env(struct spawn_params *p)
+{
+	if (lua_isnil(p->L, -1)) {
+		p->environment = 0;
+		lua_pop(p->L, 1);
+	}
+	else {
+		p->environment = concat_env(p->L);
+	}
+}
+
+/* _ opts ... */
 static int get_redirect(lua_State *L, const char *stdname, HANDLE *ph)
 {
 	int ret;
@@ -288,22 +335,44 @@ static int get_redirect(lua_State *L, const char *stdname, HANDLE *ph)
 	return ret;
 }
 
+/* _ opts ... */
+static void spawn_param_redirect(struct spawn_params *p)
+{
+	p->si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+	p->si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+	p->si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+	if (get_redirect(p->L, "stdin",  &p->si.hStdInput)
+		| get_redirect(p->L, "stdout", &p->si.hStdOutput)
+		| get_redirect(p->L, "stderr", &p->si.hStdError))
+		p->si.dwFlags = STARTF_USESTDHANDLES;
+}
+
 #define PROCESS_HANDLE "process"
 struct process {
-	HANDLE hProcess;
 	int status;
+	HANDLE hProcess;
 };
+
+static int spawn_param_execute(struct spawn_params *p, struct process *proc)
+{
+	char *c = strdup(p->cmdline);
+	char *e = (char *)p->environment; // strdup(p->environment);
+	PROCESS_INFORMATION pi;
+	proc->status = -1;
+	/* XXX does CreateProcess modify its environment argument? */
+	int ret = CreateProcess(0, c, 0, 0, 0, 0, e, 0, &p->si, &pi);
+	if (e) free(e);
+	free(c);
+	if (ret) proc->hProcess = pi.hProcess;
+	return ret;
+}
 
 /* filename [args-opts] -- true/nil,error */
 /* args-opts -- true/nil,error */
 static int ex_spawn(lua_State *L)
 {
-	const char *cmdline;
-	const char *environment;
-	struct process *p;
-	STARTUPINFO si = {sizeof si};
-	PROCESS_INFORMATION pi;
-	BOOL ret;
+	struct spawn_params params = {L};
+	struct process *proc;
 
 	if (lua_type(L, 1) == LUA_TTABLE) {
 		lua_getfield(L, 1, "command");             /* opts ... cmd */
@@ -328,21 +397,13 @@ static int ex_spawn(lua_State *L)
 	}
 
 	/* get command */
-	/* XXX luaL_checkstring is confusing here */
-	cmdline = luaL_checkstring(L, 1);
-	if (needs_quoting(cmdline)) {
-		lua_pushliteral(L, "\"");          /* cmd ... q */
-		lua_pushvalue(L, 1);               /* cmd ... q cmd */
-		lua_pushvalue(L, -2);              /* cmd ... q cmd q */
-		lua_concat(L, 3);                  /* cmd ... "cmd" */
-		lua_replace(L, 1);                 /* "cmd" ... */
-	}
+	spawn_param_filename(&params);
 
 	/* get arguments, environment, and redirections */
 	switch (lua_type(L, 2)) {
 	default: luaL_argerror(L, 2, "expected options table"); break;
 	case LUA_TNONE:
-		environment = 0;
+		spawn_param_default(&params);
 		break;
 	case LUA_TTABLE:
 		lua_getfield(L, 2, "args");                /* cmd opts ... argtab */
@@ -350,56 +411,30 @@ static int ex_spawn(lua_State *L)
 		default: luaL_error(L, "args option must be an array"); break;
 		case LUA_TNIL:
 			lua_pop(L, 1);                         /* cmd opts ... */
-			if (lua_objlen(L, 2) == 0) break;
 			lua_pushvalue(L, 2);                   /* cmd opts ... opts */
 			if (0) /*FALLTHRU*/
 		case LUA_TTABLE:
 			if (lua_objlen(L, 2) > 0)
 				luaL_error(L, "cannot specify both the args option and array values");
-			concat_args(L);                        /* cmd opts ... argstr */
-			lua_pushvalue(L, 1);                   /* cmd opts ... argstr cmd */
-			lua_replace(L, -2);                    /* cmd opts ... cmd argstr */
-			lua_concat(L, 2);                      /* cmd opts ... cmdline */
-			cmdline = lua_tostring(L, -1);
+			spawn_param_args(&params);
 			break;
 		}
 		lua_getfield(L, 2, "env");                 /* cmd opts ... envtab */
 		switch (lua_type(L, -1)) {
 		default: luaL_error(L, "env option must be a table"); break;
 		case LUA_TNIL:
-			environment = 0;
-			lua_pop(L, 1);                         /* cmd opts */
-			break;
 		case LUA_TTABLE:
-			environment = concat_env(L);           /* cmd opts ... envstr */
+			spawn_param_env(&params);
 			break;
 		}
-		si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-		si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-		si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
-		if (get_redirect(L, "stdin",  &si.hStdInput)       /* cmd opts ... in? */
-		    | get_redirect(L, "stdout", &si.hStdOutput)    /* cmd opts ... out? */
-		    | get_redirect(L, "stderr", &si.hStdError))    /* cmd opts ... err? */
-			si.dwFlags = STARTF_USESTDHANDLES;
+		spawn_param_redirect(&params);
 		break;
 	}
-
-	p = lua_newuserdata(L, sizeof *p);             /* cmd opts ... proc */
+	proc = lua_newuserdata(L, sizeof *proc);       /* cmd opts ... proc */
 	luaL_getmetatable(L, PROCESS_HANDLE);          /* cmd opts ... proc M */
 	lua_setmetatable(L, -2);                       /* cmd opts ... proc */
-	p->status = -1;
-
-	/* XXX does CreateProcess modify its environment argument? */
-	cmdline = strdup(cmdline);
-	if (environment) environment = strdup(environment);
-	debug("CreateProcess(%s)\n", cmdline);
-	ret = CreateProcess(0, (char *)cmdline, 0, 0, 0, 0, (char *)environment, 0, &si, &pi);
-//	if (environment) free((char *)environment);
-//	free((char *)cmdline);
-
-	if (!ret)
-		return windows_error(L);
-	p->hProcess = pi.hProcess;
+	if (!spawn_param_execute(&params, proc))
+		return push_error(L);
 	return 1;  /* ... proc */
 }
 
