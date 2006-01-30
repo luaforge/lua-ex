@@ -86,7 +86,8 @@ static int ex_unsetenv(lua_State *L)
 /* -- environment-table */
 static int ex_environ(lua_State *L)
 {
-	const char *envs, *nam, *val, *end;
+	const char *nam, *val, *end;
+	const char *envs;
 	if (!(envs = GetEnvironmentStrings()))
 		return windows_error(L);
 	lua_newtable(L);
@@ -150,14 +151,13 @@ static HANDLE get_handle(FILE *f)
 /* pathname -- iter state nil */
 static int ex_dir(lua_State *L) { return luaL_error(L, "not yet implemented"); }
 
-/* pathname -- entry */
-/* XXX io.file -- entry */
+/* pathname/file -- entry */
 static int ex_dirent(lua_State *L) { return luaL_error(L, "not yet implemented"); }
 
 
-static int file_lock(lua_State *L, FILE *fh, const char *mode, long offset, long length)
+static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long length)
 {
-	HANDLE h = get_handle(fh);
+	HANDLE h = get_handle(f);
 	DWORD flags;
 	LARGE_INTEGER len = {0};
 	OVERLAPPED ov = {0};
@@ -175,31 +175,6 @@ static int file_lock(lua_State *L, FILE *fh, const char *mode, long offset, long
 		: UnlockFileEx(h, 0, len.LowPart, len.HighPart, &ov);
 	if (!ret)
 		return windows_error(L);
-	lua_pushboolean(L, 1);
-	return 1;
-}
-
-static int file_lock_crt(lua_State *L, FILE *fh, const char *mode, long offset, long length)
-{
-	int code;
-    int lkmode;
-    switch (*mode) {
-        case 'r': lkmode = LK_NBRLCK; break;
-        case 'w': lkmode = LK_NBLCK; break;
-        case 'u': lkmode = LK_UNLCK; break;
-        default : return luaL_error (L, "invalid mode");
-    }
-    if (!length) {
-        fseek (fh, 0L, SEEK_END);
-        length = ftell (fh);
-    }
-    fseek (fh, offset, SEEK_SET);
-    code = _locking (fileno(fh), lkmode, length);
-    if (code == -1) {
-        lua_pushboolean(L, 0);
-        lua_pushstring(L, strerror(errno));
-        return 2;
-    }
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -223,23 +198,29 @@ static int ex_unlock(lua_State *L)
 }
 
 
+/* -- LUA_FILEHANDLE file file */
+static int make_pipe(lua_State *L, FILE *i, FILE *o)
+{
+	FILE **pf;
+	luaL_getmetatable(L, LUA_FILEHANDLE);
+	*(pf = lua_newuserdata(L, sizeof *pf)) = i;
+	lua_pushvalue(L, -2);
+	lua_setmetatable(L, -2);
+	*(pf = lua_newuserdata(L, sizeof *pf)) = o;
+	lua_pushvalue(L, -2);
+	lua_setmetatable(L, -2);
+	return 2;
+}
+
 /* -- in out/nil error */
 static int ex_pipe(lua_State *L)
 {
 	HANDLE ph[2];
-	FILE **pf;
 	if (0 == CreatePipe(ph+0, ph+1, 0, 0))
 		return windows_error(L);
-	luaL_getmetatable(L, LUA_FILEHANDLE);  /* M */
-	pf = lua_newuserdata(L, sizeof *pf);   /* M in */
-	lua_pushvalue(L, -2);                  /* M in M */
-	lua_setmetatable(L, -2);               /* M in */
-	*pf = _fdopen(_open_osfhandle((long)ph[0], _O_RDONLY), "r");
-	pf = lua_newuserdata(L, sizeof *pf);   /* M in out */
-	lua_pushvalue(L, -3);                  /* M in out M */
-	lua_setmetatable(L, -2);               /* M in out */
-	*pf = _fdopen(_open_osfhandle((long)ph[1], _O_WRONLY), "w");
-	return 2;
+	return make_pipe(L,
+		 _fdopen(_open_osfhandle((long)ph[0], _O_RDONLY), "r"),
+		 _fdopen(_open_osfhandle((long)ph[1], _O_WRONLY), "w"));
 }
 
 static int needs_quoting(const char *s)
@@ -325,24 +306,24 @@ static int ex_spawn(lua_State *L)
 	BOOL ret;
 
 	if (lua_type(L, 1) == LUA_TTABLE) {
-		lua_getfield(L, 1, "command");             /* opts cmd */
+		lua_getfield(L, 1, "command");             /* opts ... cmd */
 		if (!lua_isnil(L, -1)) {
 			/* convert {command=command,arg1,...} to command {arg1,...} */
-			lua_insert(L, 1);                      /* cmd opts */
+			lua_insert(L, 1);                      /* cmd opts ... */
 		}
 		else {
 			/* convert {arg0,arg1,...} to arg0 {arg1,...} */
 			size_t i, n = lua_objlen(L, 1);
-			lua_rawgeti(L, 1, 1);                  /* opts nil cmd */
+			lua_rawgeti(L, 1, 1);                  /* opts ... nil cmd */
 			if (lua_isnil(L, -1))
 				luaL_error(L, "no command specified");
 			/* XXX check LUA_TSTRING */
-			lua_insert(L, 1);                      /* cmd opts nil */
+			lua_insert(L, 1);                      /* cmd opts ... nil */
 			for (i = 2; i <= n; i++) {
-				lua_rawgeti(L, 2, i);              /* cmd opts nil argi */
-				lua_rawseti(L, 2, i - 1);          /* cmd opts nil */
+				lua_rawgeti(L, 2, i);              /* cmd opts ... nil argi */
+				lua_rawseti(L, 2, i - 1);          /* cmd opts ... nil */
 			}
-			lua_rawseti(L, 2, n);                  /* cmd opts */
+			lua_rawseti(L, 2, n);                  /* cmd opts ... */
 		}
 	}
 
@@ -357,16 +338,12 @@ static int ex_spawn(lua_State *L)
 		lua_replace(L, 1);                 /* "cmd" ... */
 	}
 
-	/* set defaults */
-	environment = 0;
-	si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-	si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-	si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
-
 	/* get arguments, environment, and redirections */
 	switch (lua_type(L, 2)) {
 	default: luaL_argerror(L, 2, "expected options table"); break;
-	case LUA_TNONE: break;
+	case LUA_TNONE:
+		environment = 0;
+		break;
 	case LUA_TTABLE:
 		lua_getfield(L, 2, "args");                /* cmd opts ... argtab */
 		switch (lua_type(L, -1)) {
@@ -390,12 +367,16 @@ static int ex_spawn(lua_State *L)
 		switch (lua_type(L, -1)) {
 		default: luaL_error(L, "env option must be a table"); break;
 		case LUA_TNIL:
+			environment = 0;
 			lua_pop(L, 1);                         /* cmd opts */
 			break;
 		case LUA_TTABLE:
 			environment = concat_env(L);           /* cmd opts ... envstr */
 			break;
 		}
+		si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+		si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+		si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
 		if (get_redirect(L, "stdin",  &si.hStdInput)       /* cmd opts ... in? */
 		    | get_redirect(L, "stdout", &si.hStdOutput)    /* cmd opts ... out? */
 		    | get_redirect(L, "stderr", &si.hStdError))    /* cmd opts ... err? */

@@ -9,10 +9,6 @@
 
 #define nelemof(A) (sizeof A / sizeof *A)
 
-struct posix_spawn_file_actions {
-	int dups[3];
-};
-
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *act)
 {
 	act->dups[0] = act->dups[1] = act->dups[2] = -1;
