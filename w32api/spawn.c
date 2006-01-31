@@ -10,6 +10,7 @@
 
 extern void *checkuserdata(lua_State *L, int index, const char *name);
 extern HANDLE get_handle(FILE *f);
+extern int push_error(lua_State *L);
 
 static int needs_quoting(const char *s)
 {
@@ -144,8 +145,9 @@ int process_wait(lua_State *L)
 	struct process *p = checkuserdata(L, 1, PROCESS_HANDLE);
 	if (p->status == -1) {
 		DWORD exitcode;
-		WaitForSingleObject(p->hProcess, INFINITE);
-		GetExitCodeProcess(p->hProcess, &exitcode);
+		if (WAIT_FAILED == WaitForSingleObject(p->hProcess, INFINITE)
+		    || !GetExitCodeProcess(p->hProcess, &exitcode))
+			return push_error(L);
 		p->status = exitcode;
 	}
 	lua_pushnumber(L, p->status);
