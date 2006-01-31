@@ -38,10 +38,9 @@ static int ex_getenv(lua_State *L)
 {
 	const char *nam = luaL_checkstring(L, 1);
 	char *val = getenv(nam);
-	if (val)
-		lua_pushstring(L, val);
-	else
-		lua_pushnil(L);
+	if (!val)
+		return push_error(L);
+	lua_pushstring(L, val);
 	return 1;
 }
 
@@ -189,22 +188,6 @@ static int ex_pipe(lua_State *L)
 }
 
 
-/* ... argtab -- ... */
-static const char **build_vector(lua_State *L)
-{
-	size_t i, n = lua_objlen(L, -1);
-	const char **vec = lua_newuserdata(L, (n + 2) * sizeof *vec);
-	                                   /* ... arr vec */
-	for (i = 0; i <= n; i++) {
-		lua_rawgeti(L, -2, i);         /* ... arr vec elem */
-		vec[i] = lua_tostring(L, -1);
-		lua_pop(L, 1);                 /* ... arr vec */
-	}
-	vec[n + 1] = 0;
-	lua_replace(L, -2);                /* ... vector */
-	return vec;
-}
-
 struct spawn_params {
 	lua_State *L;
 	const char *command, **argv, **envp;
@@ -219,7 +202,7 @@ static void spawn_param_filename(struct spawn_params *p)
 	p->command = luaL_checkstring(p->L, 1);
 }
 
-
+/* -- */
 static void spawn_param_defaults(struct spawn_params *p)
 {
 	p->argv = lua_newuserdata(p->L, 2 * sizeof *p->argv);
@@ -229,10 +212,34 @@ static void spawn_param_defaults(struct spawn_params *p)
 	p->has_actions = 0;
 }
 
+/* Converts a Lua array of strings to a null-terminated array of char pointers.
+ * Pops a (0-based) Lua array and replaces it with a userdatum which is the
+ * null-terminated C array of char pointers.  The elements of this array point
+ * to the strings in the Lua array.  These strings should be associated with
+ * this userdatum via a weak table for GC purposes, but they are not here.
+ * Therefore, any function which calls this must make sure that these strings
+ * remain available until the userdatum is thrown away.
+ */
+/* ... array -- ... vector */
+static const char **make_vector(lua_State *L)
+{
+	size_t i, n = lua_objlen(L, -1);
+	const char **vec = lua_newuserdata(L, (n + 2) * sizeof *vec);
+	                                   /* ... arr vec */
+	for (i = 0; i <= n; i++) {
+		lua_rawgeti(L, -2, i);         /* ... arr vec elem */
+		vec[i] = lua_tostring(L, -1);
+		lua_pop(L, 1);                 /* ... arr vec */
+	}
+	vec[n + 1] = 0;
+	lua_replace(L, -2);                /* ... vector */
+	return vec;
+}
+
 /* ... argtab */
 static void spawn_param_args(struct spawn_params *p)
 {
-	const char **argv = build_vector(p->L);
+	const char **argv = make_vector(p->L);
 	if (!argv[0]) argv[0] = p->command;
 	p->argv = argv;
 }
@@ -261,19 +268,19 @@ static void spawn_param_env(struct spawn_params *p)
 		lua_rawseti(p->L, -3, i);          /* ... envtab arr[n]=estr k */
 	}                                      /* ... envtab arr */
 	lua_replace(p->L, -2);                 /* ... arr */
-	build_vector(p->L);                    /* ... arr */
+	make_vector(p->L);                     /* ... arr */
 }
 
 /* _ opts ... */
-static int get_redirect(lua_State *L, posix_spawn_file_actions_t *file_actions,
-	const char *stdname, int descriptor)
+static int get_redirect(struct spawn_params *p, const char *stdname, int descriptor)
 {
 	int ret;
-	lua_getfield(L, 2, stdname);
-	if ((ret = !lua_isnil(L, -1)))
-		posix_spawn_file_actions_adddup2(file_actions, 
-			fileno(luaL_checkudata(L, -1, LUA_FILEHANDLE)), descriptor);
-	lua_pop(L, 1);
+	lua_getfield(p->L, 2, stdname);
+	if ((ret = !lua_isnil(p->L, -1)))
+		/* XXX luaL_checkuserdata is confusing here */
+		posix_spawn_file_actions_adddup2(&p->file_actions, 
+			fileno(luaL_checkuserdata(p->L, -1, LUA_FILEHANDLE)), descriptor);
+	lua_pop(p->L, 1);
 	return ret;
 }
 
@@ -282,9 +289,9 @@ static void spawn_param_redirects(struct spawn_params *p)
 {
 	posix_spawn_file_actions_init(&p->file_actions);
 	p->has_actions = 1;
-	get_redirect(p->L, &p->file_actions, "stdin", STDIN_FILENO);
-	get_redirect(p->L, &p->file_actions, "stdout", STDOUT_FILENO);
-	get_redirect(p->L, &p->file_actions, "stderr", STDERR_FILENO);
+	get_redirect(p, "stdin", STDIN_FILENO);
+	get_redirect(p, "stdout", STDOUT_FILENO);
+	get_redirect(p, "stderr", STDERR_FILENO);
 }
 
 #define PROCESS_HANDLE "process"
@@ -339,7 +346,7 @@ static int ex_spawn(lua_State *L)
 	switch (lua_type(L, 2)) {
 	default: luaL_argerror(L, 2, "expected options table"); break;
 	case LUA_TNONE:
-		spawn_param_defaults(&params);
+		spawn_param_defaults(&params);             /* cmd opts ... */
 		break;
 	case LUA_TTABLE:
 		lua_getfield(L, 2, "args");                /* cmd opts ... argtab */
@@ -363,7 +370,8 @@ static int ex_spawn(lua_State *L)
 			spawn_param_env(&params);              /* cmd opts ... */
 			break;
 		}
-		spawn_param_redirects(&params);
+		spawn_param_redirects(&params);            /* cmd opts ... */
+		break;
 	}
 	proc = lua_newuserdata(L, sizeof *proc);       /* cmd opts ... proc */
 	luaL_getmetatable(L, PROCESS_HANDLE);          /* cmd opts ... proc M */
@@ -376,7 +384,7 @@ static int ex_spawn(lua_State *L)
 /* proc -- exitcode/nil error */
 static int process_wait(lua_State *L)
 {
-	struct process *p = luaL_checkudata(L, 1, PROCESS_HANDLE);
+	struct process *p = luaL_checkuserdata(L, 1, PROCESS_HANDLE);
 	if (p->status == -1) {
 		int status;
 		if (-1 == waitpid(p->pid, &status, 0))
@@ -448,4 +456,3 @@ int luaopen_ex(lua_State *L)
 	lua_pushboolean(L, 1);
 	return 1;
 }
-
