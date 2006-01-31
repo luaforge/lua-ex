@@ -7,5 +7,6 @@ WARNINGS = -W -Wall -Wno-missing-braces
 LUA = /home/mark/src/lang/lua/lua51
 LUALIBS = -L$(LUA)/bin/mingw -llua51
 
-ex.dll: ex.o
-	$(CC) $(TARGET_ARCH) -shared -o $@ ex.o $(LUALIBS) /c/windows/system32/msvcrt.dll
+ex.dll-OBJS = ex.o spawn.o
+ex.dll: $(ex.dll-OBJS)
+	$(CC) $(TARGET_ARCH) -shared -o $@ $(ex.dll-OBJS) $(LUALIBS) /c/windows/system32/msvcrt.dll
