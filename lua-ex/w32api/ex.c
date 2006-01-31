@@ -31,7 +31,7 @@ extern HANDLE get_handle(FILE *f)
 
 
 /* -- nil error */
-static int push_error(lua_State *L)
+extern int push_error(lua_State *L)
 {
 	DWORD error = GetLastError();
 	char buffer[1024];
@@ -56,12 +56,8 @@ static int ex_getenv(lua_State *L)
 	char val[1024];
 	size_t len;
 	len = GetEnvironmentVariable(nam, val, sizeof val);
-	if (sizeof val < len)
+	if (sizeof val < len || (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND))
 		return push_error(L);
-	else if (len == 0) {
-		lua_pushnil(L);
-		return 1;
-	}
 	lua_pushlstring(L, val, len);
 	return 1;
 }
@@ -194,9 +190,22 @@ static int ex_unlock(lua_State *L)
 
 
 /* -- LUA_FILEHANDLE file file */
-static int make_pipe(lua_State *L, FILE *i, FILE *o)
+static int make_pipe(FILE **i, FILE **o)
 {
-	FILE **pf;
+	HANDLE ph[2];
+	if (0 == CreatePipe(ph+0, ph+1, 0, 0))
+		return 0;
+	*i = _fdopen(_open_osfhandle((long)ph[0], _O_RDONLY), "r");
+	*o = _fdopen(_open_osfhandle((long)ph[1], _O_WRONLY), "w");
+	return 1;
+}
+
+/* -- in out/nil error */
+static int ex_pipe(lua_State *L)
+{
+	FILE *i, *o, **pf;
+	if (!make_pipe(&i, &o))
+		return push_error(L);
 	luaL_getmetatable(L, LUA_FILEHANDLE);
 	*(pf = lua_newuserdata(L, sizeof *pf)) = i;
 	lua_pushvalue(L, -2);
@@ -205,17 +214,6 @@ static int make_pipe(lua_State *L, FILE *i, FILE *o)
 	lua_pushvalue(L, -2);
 	lua_setmetatable(L, -2);
 	return 2;
-}
-
-/* -- in out/nil error */
-static int ex_pipe(lua_State *L)
-{
-	HANDLE ph[2];
-	if (0 == CreatePipe(ph+0, ph+1, 0, 0))
-		return push_error(L);
-	return make_pipe(L,
-		 _fdopen(_open_osfhandle((long)ph[0], _O_RDONLY), "r"),
-		 _fdopen(_open_osfhandle((long)ph[1], _O_WRONLY), "w"));
 }
 
 

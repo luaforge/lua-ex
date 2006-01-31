@@ -15,7 +15,7 @@
 
 
 /* Generally useful function -- what luaL_checkudata() should do */
-void *checkuserdata(lua_State *L, int idx, const char *tname)
+extern void *checkuserdata(lua_State *L, int idx, const char *tname)
 {
     void *ud;
     luaL_argcheck(L, ud = luaL_checkudata(L, idx, tname), idx, tname);
@@ -24,7 +24,7 @@ void *checkuserdata(lua_State *L, int idx, const char *tname)
 
 
 /* -- nil error */
-int push_error(lua_State *L)
+extern int push_error(lua_State *L)
 {
 	lua_pushnil(L);
 	lua_pushstring(L, strerror(errno));
@@ -163,10 +163,22 @@ static int ex_unlock(lua_State *L)
 }
 
 
-/* -- LUA_FILEHANDLE file file */
-static int make_pipe(lua_State *L, FILE *i, FILE *o)
+static int make_pipe(FILE **i, FILE **o)
 {
-	FILE **pf;
+	int fd[2];
+	if (-1 == pipe(fd))
+		return 0;
+	*i = fdopen(fd[0], "r");
+	*o = fdopen(fd[1], "w");
+	return 1;
+}
+
+/* -- in out/nil error */
+static int ex_pipe(lua_State *L)
+{
+	FILE *i, *o, **pf;
+	if (!make_pipe(&i, &o))
+		return push_error(L);
 	luaL_getmetatable(L, LUA_FILEHANDLE);
 	*(pf = lua_newuserdata(L, sizeof *pf)) = i;
 	lua_pushvalue(L, -2);
@@ -175,15 +187,6 @@ static int make_pipe(lua_State *L, FILE *i, FILE *o)
 	lua_pushvalue(L, -2);
 	lua_setmetatable(L, -2);
 	return 2;
-}
-
-/* -- in out/nil error */
-static int ex_pipe(lua_State *L)
-{
-	int fd[2];
-	if (-1 == pipe(fd))
-		return push_error(L);
-	return make_pipe(L, fdopen(fd[0], "r"), fdopen(fd[1], "w"));
 }
 
 
