@@ -53,12 +53,16 @@ extern int push_error(lua_State *L)
 static int ex_getenv(lua_State *L)
 {
 	const char *nam = luaL_checkstring(L, 1);
-	char val[1024];
-	size_t len;
-	len = GetEnvironmentVariable(nam, val, sizeof val);
-	if (sizeof val < len || (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND))
+	char sval[256], *val = sval;
+	size_t len = GetEnvironmentVariable(nam, val, sizeof val);
+	if (sizeof sval < len) {
+		val = malloc(len);
+		len = GetEnvironmentVariable(nam, val, sizeof val);
+	}
+	if (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND)
 		return push_error(L);
 	lua_pushlstring(L, val, len);
+	if (val != sval) free(val);
 	return 1;
 }
 
