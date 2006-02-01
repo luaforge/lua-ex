@@ -136,18 +136,139 @@ static int ex_mkdir(lua_State *L)
 /* -- pathname/nil error */
 static int ex_currentdir(lua_State *L)
 {
-	char pathname[PATH_MAX + 1];
+	char pathname[MAX_PATH + 1];
 	size_t len = GetCurrentDirectory(sizeof pathname, pathname);
 	if (len == 0) return push_error(L);
 	lua_pushlstring(L, pathname, len);
 	return 1;
 }
 
-/* pathname -- iter state nil */
-static int ex_dir(lua_State *L) { return luaL_error(L, "not yet implemented"); }
+
+static BOOL GetFileInformationByPath(LPCSTR name, BY_HANDLE_FILE_INFORMATION *pinfo)
+{
+	HANDLE h = CreateFile(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+	BOOL ret = h != INVALID_HANDLE_VALUE;
+	if (ret) {
+		ret = GetFileInformationByHandle(h, pinfo);
+		CloseHandle(h);
+	}
+	return ret;
+}
 
 /* pathname/file -- entry */
-static int ex_dirent(lua_State *L) { return luaL_error(L, "not yet implemented"); }
+static int ex_dirent(lua_State *L)
+{
+	BY_HANDLE_FILE_INFORMATION info;
+	BOOL ret;
+	switch (lua_type(L, 1)) {
+	default: return luaL_argerror(L, 1, "expected file or pathname");
+	case LUA_TSTRING: {
+		const char *name = lua_tostring(L, 1);
+		ret = GetFileInformationByPath(name, &info);
+		} break;
+	case LUA_TUSERDATA: {
+		FILE **pf = checkuserdata(L, 1, LUA_FILEHANDLE);
+		ret = GetFileInformationByHandle(get_handle(*pf), &info);
+		} break;
+	}
+	if (!ret) return push_error(L);
+	if (lua_type(L, 2) != LUA_TTABLE) {
+		lua_newtable(L);
+		lua_replace(L, 2);
+	}
+	lua_pushliteral(L, "type");
+	if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+		lua_pushliteral(L, "directory");
+	else
+		lua_pushliteral(L, "file");
+	lua_settable(L, 2);
+	lua_pushliteral(L, "size");
+	{
+		uint64_t size = info.nFileSizeHigh; size <<= 32; size += info.nFileSizeLow;
+		lua_pushnumber(L, size);
+	}
+	lua_settable(L, 2);
+	lua_settop(L, 2);
+	return 1;
+}
+
+#define DIR_HANDLE "WIN32_FIND_DATA"
+struct dir_iter {
+	HANDLE hf;
+	WIN32_FIND_DATA fd;
+	size_t pathlen;
+	char pathname[MAX_PATH + 1];
+};
+
+static int dir_getpathname(lua_State *L, int index)
+{
+	struct dir_iter *pi = lua_touserdata(L, index);
+	lua_pushlstring(L, pi->pathname, pi->pathlen);
+	return 1;
+}
+
+static int dir_setpathname(lua_State *L, int index)
+{
+	struct dir_iter *pi = lua_touserdata(L, index);
+	size_t len;
+	const char *path = lua_tolstring(L, -1, &len);
+	if (len >= sizeof pi->pathname - 1)
+		return luaL_argerror(L, 1, "pathname too long");
+	if (path[len - 1] != *LUA_DIRSEP) {
+		lua_pushliteral(L, LUA_DIRSEP);
+		lua_concat(L, 2);
+		path = lua_tostring(L, -1);
+		len++;
+	}
+	memcpy(pi->pathname, path, len + 1);
+	pi->pathlen = len;
+	lua_pop(L, 1);
+	return 0;
+}
+
+/* pathname -- iter state nil */
+/* {{ dir ... -- entry }} */
+static int ex_dir(lua_State *L)
+{
+	const char *pathname;
+	struct dir_iter *pi;
+	switch (lua_type(L, 1)) {
+	default: return luaL_argerror(L, 1, "expected pathname");
+	case LUA_TSTRING:
+		pathname = lua_tostring(L, 1);
+		lua_pushcfunction(L, ex_dir);          /* pathname ... iter */
+		pi = lua_newuserdata(L, sizeof *pi);   /* pathname ... iter state */
+		pi->hf = FindFirstFile(pathname, &pi->fd);
+		if (pi->hf == INVALID_HANDLE_VALUE)
+			return push_error(L);
+		luaL_getmetatable(L, DIR_HANDLE);      /* pathname ... iter state M */
+		lua_setmetatable(L, -2);               /* pathname ... iter state */
+		lua_pushvalue(L, 1);                   /* pathname ... iter state pathname */
+		dir_setpathname(L, -2);                /* pathname ... iter state */
+		return 2;
+	case LUA_TUSERDATA:
+		pi = checkuserdata(L, 1, DIR_HANDLE);
+		if (pi->hf == INVALID_HANDLE_VALUE) {
+			lua_pushnil(L);
+			return 1;
+		}
+		lua_newtable(L);                       /* dir ... entry */
+		dir_getpathname(L, 1);                 /* dir ... entry dirpath */
+		lua_pushstring(L, pi->fd.cFileName);   /* dir ... entry dirpath name */
+		lua_pushliteral(L, "name");            /* dir ... entry dirpath name "name" */
+		lua_pushvalue(L, -2);                  /* dir ... entry dirpath name "name" name */
+		lua_settable(L, -5);                   /* dir ... entry dirpath name */
+		lua_concat(L, 2);                      /* dir ... entry fullpath */
+		if (!FindNextFile(pi->hf, &pi->fd)) {
+			FindClose(pi->hf);
+			pi->hf = INVALID_HANDLE_VALUE;
+		}
+		lua_replace(L, 1);                     /* fullpath ... entry */
+		lua_replace(L, 2);                     /* fullpath entry ... */
+		return ex_dirent(L);
+	}
+	/*NOTREACHED*/
+}
 
 
 static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long length)
@@ -239,7 +360,7 @@ static int ex_spawn(lua_State *L)
 			size_t i, n = lua_objlen(L, 1);
 			lua_rawgeti(L, 1, 1);                  /* opts ... nil cmd */
 			if (lua_isnil(L, -1))
-				luaL_error(L, "no command specified");
+				return luaL_error(L, "no command specified");
 			/* XXX check LUA_TSTRING */
 			lua_insert(L, 1);                      /* cmd opts ... nil */
 			for (i = 2; i <= n; i++) {
@@ -255,27 +376,27 @@ static int ex_spawn(lua_State *L)
 
 	/* get arguments, environment, and redirections */
 	switch (lua_type(L, 2)) {
-	default: luaL_argerror(L, 2, "expected options table"); break;
+	default: return luaL_argerror(L, 2, "expected options table");
 	case LUA_TNONE:
 		spawn_param_defaults(&params);             /* cmd opts ... */
 		break;
 	case LUA_TTABLE:
 		lua_getfield(L, 2, "args");                /* cmd opts ... argtab */
 		switch (lua_type(L, -1)) {
-		default: luaL_error(L, "args option must be an array"); break;
+		default: return luaL_error(L, "args option must be an array");
 		case LUA_TNIL:
 			lua_pop(L, 1);                         /* cmd opts ... */
 			lua_pushvalue(L, 2);                   /* cmd opts ... opts */
 			if (0) /*FALLTHRU*/
 		case LUA_TTABLE:
 			if (lua_objlen(L, 2) > 0)
-				luaL_error(L, "cannot specify both the args option and array values");
+				return luaL_error(L, "cannot specify both the args option and array values");
 			spawn_param_args(&params);             /* cmd opts ... */
 			break;
 		}
 		lua_getfield(L, 2, "env");                 /* cmd opts ... envtab */
 		switch (lua_type(L, -1)) {
-		default: luaL_error(L, "env option must be a table"); break;
+		default: return luaL_error(L, "env option must be a table");
 		case LUA_TNIL:
 		case LUA_TTABLE:
 			spawn_param_env(&params);              /* cmd opts ... */
@@ -329,17 +450,17 @@ int luaopen_ex(lua_State *L)
 {
 	/* extend the io table */
 	lua_getglobal(L, "io");
-	if (lua_isnil(L, -1)) luaL_error(L, "io not loaded");
+	if (lua_isnil(L, -1)) return luaL_error(L, "io not loaded");
 	luaL_openlib(L, 0, ex_iolib, 0);
 
 	/* extend the os table */
 	lua_getglobal(L, "os");
-	if (lua_isnil(L, -1)) luaL_error(L, "os not loaded");
+	if (lua_isnil(L, -1)) return luaL_error(L, "os not loaded");
 	luaL_openlib(L, "os", ex_oslib, 0);
 
 	/* extend the io.file metatable */
 	luaL_getmetatable(L, LUA_FILEHANDLE);
-	if (lua_isnil(L, -1)) luaL_error(L, "can't find FILE* metatable");
+	if (lua_isnil(L, -1)) return luaL_error(L, "can't find FILE* metatable");
 	luaL_openlib(L, 0, ex_iofile_methods, 0);
 
 	/* proc metatable */
