@@ -126,19 +126,19 @@ static int ex_currentdir(lua_State *L)
 static int ex_dirent(lua_State *L)
 {
 	struct stat st;
-	int ret;
 	switch (lua_type(L, 1)) {
 	default: return luaL_argerror(L, 1, "expected file or pathname");
 	case LUA_TSTRING: {
 		const char *name = lua_tostring(L, 1);
-		ret = stat(name, &st);
+		if (-1 == stat(name, &st))
+			return push_error(L);
 		} break;
 	case LUA_TUSERDATA: {
 		FILE **pf = checkuserdata(L, 1, LUA_FILEHANDLE);
-		ret = fstat(fileno(*pf), &st);
+		if (-1 == fstat(fileno(*pf), &st))
+			return push_error(L);
 		} break;
 	}
-	if (ret == -1) return push_error(L);
 	if (lua_type(L, 2) != LUA_TTABLE) {
 		lua_newtable(L);
 		lua_replace(L, 2);
@@ -157,22 +157,22 @@ static int ex_dirent(lua_State *L)
 }
 
 #define DIR_HANDLE "DIR*"
-struct dir_iter {
+struct diriter {
 	DIR *dir;
 	size_t pathlen;
 	char pathname[PATH_MAX + 1];
 };
 
-static int dir_getpathname(lua_State *L, int index)
+static int diriter_getpathname(lua_State *L, int index)
 {
-	struct dir_iter *pi = lua_touserdata(L, index);
+	struct diriter *pi = lua_touserdata(L, index);
 	lua_pushlstring(L, pi->pathname, pi->pathlen);
 	return 1;
 }
 
-static int dir_setpathname(lua_State *L, int index)
+static int diriter_setpathname(lua_State *L, int index)
 {
-	struct dir_iter *pi = lua_touserdata(L, index);
+	struct diriter *pi = lua_touserdata(L, index);
 	size_t len;
 	const char *path = lua_tolstring(L, -1, &len);
 	if (len >= sizeof pi->pathname - 1)
@@ -189,12 +189,23 @@ static int dir_setpathname(lua_State *L, int index)
 	return 0;
 }
 
+/* dir -- */
+static int diriter_close(lua_State *L)
+{
+	struct diriter *pi = lua_touserdata(L, 1);
+	if (pi->dir) {
+		closedir(pi->dir);
+		pi->dir = 0;
+	}
+	return 0;
+}
+
 /* pathname -- iter state nil */
-/* {{ dir ... -- entry }} */
+/* dir ... -- entry */
 static int ex_dir(lua_State *L)
 {
 	const char *pathname;
-	struct dir_iter *pi;
+	struct diriter *pi;
 	struct dirent *d;
 	switch (lua_type(L, 1)) {
 	default: return luaL_argerror(L, 1, "expected pathname");
@@ -207,17 +218,18 @@ static int ex_dir(lua_State *L)
 		luaL_getmetatable(L, DIR_HANDLE);      /* pathname ... iter state M */
 		lua_setmetatable(L, -2);               /* pathname ... iter state */
 		lua_pushvalue(L, 1);                   /* pathname ... iter state pathname */
-		dir_setpathname(L, -2);                /* pathname ... iter state */
+		diriter_setpathname(L, -2);            /* pathname ... iter state */
 		return 2;
 	case LUA_TUSERDATA:
 		pi = checkuserdata(L, 1, DIR_HANDLE);
 		d = readdir(pi->dir);
 		if (!d) {
 			closedir(pi->dir);
+			pi->dir = 0;
 			return push_error(L);
 		}
 		lua_newtable(L);                       /* dir ... entry */
-		dir_getpathname(L, 1);                 /* dir ... entry dirpath */
+		diriter_getpathname(L, 1);             /* dir ... entry dirpath */
 		lua_pushstring(L, d->d_name);          /* dir ... entry dirpath name */
 		lua_pushliteral(L, "name");            /* dir ... entry dirpath name "name" */
 		lua_pushvalue(L, -2);                  /* dir ... entry dirpath name "name" name */
@@ -394,6 +406,10 @@ static const luaL_reg ex_oslib[] = {
 	{"spawn",      ex_spawn},
 	{0,0}
 };
+static const luaL_reg ex_diriter_methods[] = {
+	{"__gc", diriter_close},
+	{0,0}
+};
 static const luaL_reg ex_process_methods[] = {
 	{"wait", process_wait},
 	{0,0}
@@ -416,8 +432,9 @@ int luaopen_ex(lua_State *L)
 	if (lua_isnil(L, -1)) return luaL_error(L, "can't find FILE* metatable");
 	luaL_openlib(L, 0, ex_iofile_methods, 0);
 
-	/* dir_iter metatable */
+	/* diriter metatable */
 	luaL_newmetatable(L, DIR_HANDLE);
+	luaL_openlib(L, 0, ex_diriter_methods, 0);
 
 	/* proc metatable */
 	luaL_newmetatable(L, PROCESS_HANDLE);       /* proc */
@@ -426,7 +443,10 @@ int luaopen_ex(lua_State *L)
 	lua_pushvalue(L, -2);                       /* proc __index proc */
 	lua_settable(L, -3);                        /* proc */
 
-	/* for lack of a better thing to return */
-	lua_pushboolean(L, 1);
+	/* Make all functions available via ex. namespace */
+	luaL_openlib(L, "ex", ex_iolib, 0);
+	luaL_openlib(L, 0, ex_oslib, 0);
+	luaL_openlib(L, 0, ex_iofile_methods, 0);
+
 	return 1;
 }
