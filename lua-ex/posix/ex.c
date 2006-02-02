@@ -416,6 +416,9 @@ int luaopen_ex(lua_State *L)
 	if (lua_isnil(L, -1)) return luaL_error(L, "can't find FILE* metatable");
 	luaL_openlib(L, 0, ex_iofile_methods, 0);
 
+	/* dir_iter metatable */
+	luaL_newmetatable(L, DIR_HANDLE);
+
 	/* proc metatable */
 	luaL_newmetatable(L, PROCESS_HANDLE);       /* proc */
 	luaL_openlib(L, 0, ex_process_methods, 0);  /* proc */

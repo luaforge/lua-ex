@@ -14,6 +14,8 @@
 
 #include "spawn.h"
 
+#define debug(...) fprintf(stderr,__VA_ARGS__)
+
 
 /* Generally useful function -- what luaL_checkudata() should do */
 extern void *checkuserdata(lua_State *L, int idx, const char *tname)
@@ -155,38 +157,63 @@ static BOOL GetFileInformationByPath(LPCSTR name, BY_HANDLE_FILE_INFORMATION *pi
 	return ret;
 }
 
+static uint64_t get_size(const char *name)
+{
+	HANDLE h = CreateFile(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
+	DWORD lo, hi;
+	uint64_t size;
+	if (h == INVALID_HANDLE_VALUE)
+		size = 0;
+	else {
+		lo = GetFileSize(h, &hi);
+		if (lo == INVALID_FILE_SIZE && GetLastError() != NO_ERROR)
+			size = 0;
+		else
+			size = hi; size <<= 32; size += lo;
+		CloseHandle(h);
+	}
+	return size;
+}
+
 /* pathname/file -- entry */
 static int ex_dirent(lua_State *L)
 {
-	BY_HANDLE_FILE_INFORMATION info;
-	BOOL ret;
+	DWORD attr;
+	uint64_t size;
 	switch (lua_type(L, 1)) {
 	default: return luaL_argerror(L, 1, "expected file or pathname");
 	case LUA_TSTRING: {
 		const char *name = lua_tostring(L, 1);
-		ret = GetFileInformationByPath(name, &info);
+		attr = GetFileAttributes(name);
+		if (attr == (DWORD)-1)
+			return push_error(L);
+		if (attr & FILE_ATTRIBUTE_DIRECTORY)
+			size = 0;
+		else
+			size = get_size(name);
 		} break;
 	case LUA_TUSERDATA: {
 		FILE **pf = checkuserdata(L, 1, LUA_FILEHANDLE);
-		ret = GetFileInformationByHandle(get_handle(*pf), &info);
+		BY_HANDLE_FILE_INFORMATION info;
+		BOOL ret = GetFileInformationByHandle(get_handle(*pf), &info);
+		if (!ret)
+			return push_error(L);
+		attr = info.dwFileAttributes;
+		size = info.nFileSizeHigh; size <<= 32; size += info.nFileSizeLow;
 		} break;
 	}
-	if (!ret) return push_error(L);
 	if (lua_type(L, 2) != LUA_TTABLE) {
 		lua_newtable(L);
 		lua_replace(L, 2);
 	}
 	lua_pushliteral(L, "type");
-	if (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)
+	if (attr & FILE_ATTRIBUTE_DIRECTORY)
 		lua_pushliteral(L, "directory");
 	else
 		lua_pushliteral(L, "file");
 	lua_settable(L, 2);
 	lua_pushliteral(L, "size");
-	{
-		uint64_t size = info.nFileSizeHigh; size <<= 32; size += info.nFileSizeLow;
-		lua_pushnumber(L, size);
-	}
+	lua_pushnumber(L, size);
 	lua_settable(L, 2);
 	lua_settop(L, 2);
 	return 1;
@@ -235,23 +262,30 @@ static int ex_dir(lua_State *L)
 	switch (lua_type(L, 1)) {
 	default: return luaL_argerror(L, 1, "expected pathname");
 	case LUA_TSTRING:
-		pathname = lua_tostring(L, 1);
-		lua_pushcfunction(L, ex_dir);          /* pathname ... iter */
-		pi = lua_newuserdata(L, sizeof *pi);   /* pathname ... iter state */
+		lua_pushvalue(L, 1);                   /* pathname ... pathname */
+		lua_pushliteral(L, "\\*");             /* pathname ... pathname "\\*" */
+		lua_concat(L, 2);                      /* pathname ... pattern */
+		pathname = lua_tostring(L, -1);
+		lua_pushcfunction(L, ex_dir);          /* pathname ... pat iter */
+		pi = lua_newuserdata(L, sizeof *pi);   /* pathname ... pat iter state */
+		debug("FindFirstFile(\"%s\")\n", pathname);
 		pi->hf = FindFirstFile(pathname, &pi->fd);
 		if (pi->hf == INVALID_HANDLE_VALUE)
 			return push_error(L);
-		luaL_getmetatable(L, DIR_HANDLE);      /* pathname ... iter state M */
-		lua_setmetatable(L, -2);               /* pathname ... iter state */
-		lua_pushvalue(L, 1);                   /* pathname ... iter state pathname */
-		dir_setpathname(L, -2);                /* pathname ... iter state */
+		luaL_getmetatable(L, DIR_HANDLE);      /* pathname ... pat iter state M */
+		lua_setmetatable(L, -2);               /* pathname ... pat iter state */
+		lua_pushvalue(L, 1);                   /* pathname ... pat iter state pathname */
+		dir_setpathname(L, -2);                /* pathname ... pat iter state */
+		debug("returned DIR:%p\n", lua_topointer(L, -1));
 		return 2;
 	case LUA_TUSERDATA:
+		debug("received DIR:%p\n", lua_topointer(L, 1));
 		pi = checkuserdata(L, 1, DIR_HANDLE);
 		if (pi->hf == INVALID_HANDLE_VALUE) {
 			lua_pushnil(L);
 			return 1;
 		}
+		debug("Found: %s\n", pi->fd.cFileName);
 		lua_newtable(L);                       /* dir ... entry */
 		dir_getpathname(L, 1);                 /* dir ... entry dirpath */
 		lua_pushstring(L, pi->fd.cFileName);   /* dir ... entry dirpath name */
@@ -265,6 +299,7 @@ static int ex_dir(lua_State *L)
 		}
 		lua_replace(L, 1);                     /* fullpath ... entry */
 		lua_replace(L, 2);                     /* fullpath entry ... */
+		debug("passing off to dirent\n");
 		return ex_dirent(L);
 	}
 	/*NOTREACHED*/
@@ -462,6 +497,9 @@ int luaopen_ex(lua_State *L)
 	luaL_getmetatable(L, LUA_FILEHANDLE);
 	if (lua_isnil(L, -1)) return luaL_error(L, "can't find FILE* metatable");
 	luaL_openlib(L, 0, ex_iofile_methods, 0);
+
+	/* dir_iter metatable */
+	luaL_newmetatable(L, DIR_HANDLE);
 
 	/* proc metatable */
 	luaL_newmetatable(L, PROCESS_HANDLE);       /* proc */
