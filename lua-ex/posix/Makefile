@@ -7,6 +7,8 @@ LUA = /home/mark/src/lang/lua/lua51
 
 ex-OBJS = ex.o spawn.o
 
+default: ex.dll
+
 ex.so: $(ex-OBJS); $(CC) -shared -o $@ $(ex-OBJS)
 
 #LIBS = -L$(LUA)/lib -llua51 spawn.a

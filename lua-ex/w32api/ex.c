@@ -14,8 +14,6 @@
 
 #include "spawn.h"
 
-#define debug(...) fprintf(stderr,__VA_ARGS__)
-
 
 /* Generally useful function -- what luaL_checkudata() should do */
 extern void *checkuserdata(lua_State *L, int idx, const char *tname)
@@ -146,6 +144,13 @@ static int ex_currentdir(lua_State *L)
 }
 
 
+static FILE *check_file(lua_State *L, int idx)
+{
+	FILE **pf = checkuserdata(L, idx, LUA_FILEHANDLE);
+	if (!*pf) return luaL_error(L, "attempt to use a closed file"), NULL;
+	return *pf;
+}
+
 static BOOL GetFileInformationByPath(LPCSTR name, BY_HANDLE_FILE_INFORMATION *pinfo)
 {
 	HANDLE h = CreateFile(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
@@ -193,10 +198,9 @@ static int ex_dirent(lua_State *L)
 			size = get_size(name);
 		} break;
 	case LUA_TUSERDATA: {
-		FILE **pf = checkuserdata(L, 1, LUA_FILEHANDLE);
+		FILE *f = check_file(L, 1);
 		BY_HANDLE_FILE_INFORMATION info;
-		BOOL ret = GetFileInformationByHandle(get_handle(*pf), &info);
-		if (!ret)
+		if (!GetFileInformationByHandle(get_handle(f), &info))
 			return push_error(L);
 		attr = info.dwFileAttributes;
 		size = info.nFileSizeHigh; size <<= 32; size += info.nFileSizeLow;
@@ -223,49 +227,46 @@ static int ex_dirent(lua_State *L)
 struct diriter {
 	HANDLE hf;
 	WIN32_FIND_DATA fd;
-	size_t pathlen;
-	char pathname[MAX_PATH + 1];
 };
 
+/* ...diriter... -- ...diriter... pathname */
 static int diriter_getpathname(lua_State *L, int index)
 {
-	struct diriter *pi = lua_touserdata(L, index);
-	lua_pushlstring(L, pi->pathname, pi->pathlen);
+	lua_pushvalue(L, index);
+	lua_gettable(L, LUA_REGISTRYINDEX);
 	return 1;
 }
 
+/* ...diriter... pathname -- ...diriter... */
 static int diriter_setpathname(lua_State *L, int index)
 {
-	struct diriter *pi = lua_touserdata(L, index);
 	size_t len;
 	const char *path = lua_tolstring(L, -1, &len);
-	if (len >= sizeof pi->pathname - 1)
-		return luaL_argerror(L, 1, "pathname too long");
 	if (path[len - 1] != *LUA_DIRSEP) {
 		lua_pushliteral(L, LUA_DIRSEP);
 		lua_concat(L, 2);
-		path = lua_tostring(L, -1);
-		len++;
 	}
-	memcpy(pi->pathname, path, len + 1);
-	pi->pathlen = len;
-	lua_pop(L, 1);
+	lua_pushvalue(L, index);               /* ... pathname diriter */
+	lua_insert(L, -2);                     /* ... diriter pathname */
+	lua_settable(L, LUA_REGISTRYINDEX);    /* ... */
 	return 0;
 }
 
-/* dir -- */
+/* diriter -- diriter */
 static int diriter_close(lua_State *L)
 {
 	struct diriter *pi = lua_touserdata(L, 1);
 	if (pi->hf != INVALID_HANDLE_VALUE) {
 		FindClose(pi->hf);
 		pi->hf = INVALID_HANDLE_VALUE;
+		lua_pushnil(L);
+		diriter_setpathname(L, 1);
 	}
 	return 0;
 }
 
 /* pathname -- iter state nil */
-/* dir ... -- entry */
+/* diriter ... -- entry */
 static int ex_dir(lua_State *L)
 {
 	const char *pathname;
@@ -279,36 +280,31 @@ static int ex_dir(lua_State *L)
 		pathname = lua_tostring(L, -1);
 		lua_pushcfunction(L, ex_dir);          /* pathname ... pat iter */
 		pi = lua_newuserdata(L, sizeof *pi);   /* pathname ... pat iter state */
-		debug("FindFirstFile(\"%s\")\n", pathname);
 		pi->hf = FindFirstFile(pathname, &pi->fd);
 		if (pi->hf == INVALID_HANDLE_VALUE)
 			return push_error(L);
 		luaL_getmetatable(L, DIR_HANDLE);      /* pathname ... pat iter state M */
 		lua_setmetatable(L, -2);               /* pathname ... pat iter state */
 		lua_pushvalue(L, 1);                   /* pathname ... pat iter state pathname */
-		diriter_setpathname(L, -2);                /* pathname ... pat iter state */
-		debug("returned DIR:%p\n", lua_topointer(L, -1));
+		diriter_setpathname(L, -2);            /* pathname ... pat iter state */
 		return 2;
 	case LUA_TUSERDATA:
-		debug("received DIR:%p\n", lua_topointer(L, 1));
 		pi = checkuserdata(L, 1, DIR_HANDLE);
 		if (pi->hf == INVALID_HANDLE_VALUE)
 			return 0;
-		debug("Found: %s\n", pi->fd.cFileName);
-		lua_newtable(L);                       /* dir ... entry */
-		diriter_getpathname(L, 1);                 /* dir ... entry dirpath */
-		lua_pushstring(L, pi->fd.cFileName);   /* dir ... entry dirpath name */
-		lua_pushliteral(L, "name");            /* dir ... entry dirpath name "name" */
-		lua_pushvalue(L, -2);                  /* dir ... entry dirpath name "name" name */
-		lua_settable(L, -5);                   /* dir ... entry dirpath name */
-		lua_concat(L, 2);                      /* dir ... entry fullpath */
+		lua_newtable(L);                       /* diriter ... entry */
+		diriter_getpathname(L, 1);             /* diriter ... entry dirpath */
+		lua_pushstring(L, pi->fd.cFileName);   /* diriter ... entry dirpath name */
+		lua_pushliteral(L, "name");            /* diriter ... entry dirpath name "name" */
+		lua_pushvalue(L, -2);                  /* diriter ... entry dirpath name "name" name */
+		lua_settable(L, -5);                   /* diriter ... entry dirpath name */
+		lua_concat(L, 2);                      /* diriter ... entry fullpath */
 		if (!FindNextFile(pi->hf, &pi->fd)) {
 			FindClose(pi->hf);
 			pi->hf = INVALID_HANDLE_VALUE;
 		}
 		lua_replace(L, 1);                     /* fullpath ... entry */
 		lua_replace(L, 2);                     /* fullpath entry ... */
-		debug("passing off to dirent\n");
 		return ex_dirent(L);
 	}
 	/*NOTREACHED*/
@@ -342,11 +338,11 @@ static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long 
 /* file mode [offset [length]] -- true/nil error */
 static int ex_lock(lua_State *L)
 {
-	FILE **pf = checkuserdata(L, 1, LUA_FILEHANDLE);
+	FILE *f = check_file(L, 1);
 	const char *mode = luaL_checkstring(L, 2);
 	long offset = luaL_optnumber(L, 3, 0);
 	long length = luaL_optnumber(L, 4, 0);
-	return file_lock(L, *pf, mode, offset, length);
+	return file_lock(L, f, mode, offset, length);
 }
 
 /* file [offset [length]] -- true/nil error */
@@ -386,8 +382,8 @@ static int ex_pipe(lua_State *L)
 }
 
 
-/* filename [args-opts] -- true/nil,error */
-/* args-opts -- true/nil,error */
+/* filename [args-opts] -- true/nil error */
+/* args-opts -- true/nil error */
 static int ex_spawn(lua_State *L)
 {
 	struct spawn_params params = {L};
