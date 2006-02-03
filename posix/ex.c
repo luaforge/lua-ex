@@ -452,6 +452,7 @@ int luaopen_ex(lua_State *L)
 	luaL_openlib(L, "ex", ex_iolib, 0);
 	luaL_openlib(L, 0, ex_oslib, 0);
 	luaL_openlib(L, 0, ex_iofile_methods, 0);
+	luaL_openlib(L, 0, ex_process_methods, 0);
 
 	return 1;
 }
