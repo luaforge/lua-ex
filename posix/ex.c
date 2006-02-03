@@ -13,6 +13,7 @@
 #include <fcntl.h>
 #include <dirent.h>
 #include <sys/stat.h>
+
 #include "spawn.h"
 
 
@@ -122,6 +123,13 @@ static int ex_currentdir(lua_State *L)
 }
 
 
+static FILE *check_file(lua_State *L, int idx)
+{
+	FILE **pf = checkuserdata(L, idx, LUA_FILEHANDLE);
+	if (!*pf) return luaL_error(L, "attempt to use a closed file"), NULL;
+	return *pf;
+}
+
 /* pathname/file -- entry */
 static int ex_dirent(lua_State *L)
 {
@@ -134,8 +142,8 @@ static int ex_dirent(lua_State *L)
 			return push_error(L);
 		} break;
 	case LUA_TUSERDATA: {
-		FILE **pf = checkuserdata(L, 1, LUA_FILEHANDLE);
-		if (-1 == fstat(fileno(*pf), &st))
+		FILE *f = check_file(L, 1);
+		if (-1 == fstat(fileno(f), &st))
 			return push_error(L);
 		} break;
 	}
@@ -159,49 +167,46 @@ static int ex_dirent(lua_State *L)
 #define DIR_HANDLE "DIR*"
 struct diriter {
 	DIR *dir;
-	size_t pathlen;
-	char pathname[PATH_MAX + 1];
 };
 
+/* ...diriter... -- ...diriter... pathname */
 static int diriter_getpathname(lua_State *L, int index)
 {
-	struct diriter *pi = lua_touserdata(L, index);
-	lua_pushlstring(L, pi->pathname, pi->pathlen);
+	lua_pushvalue(L, index);
+	lua_gettable(L, LUA_REGISTRYINDEX);
 	return 1;
 }
 
+/* ...diriter... pathname -- ...diriter... */
 static int diriter_setpathname(lua_State *L, int index)
 {
-	struct diriter *pi = lua_touserdata(L, index);
 	size_t len;
 	const char *path = lua_tolstring(L, -1, &len);
-	if (len >= sizeof pi->pathname - 1)
-		return luaL_argerror(L, 1, "pathname too long");
-	if (path[len - 1] != *LUA_DIRSEP) {
+	if (path && path[len - 1] != *LUA_DIRSEP) {
 		lua_pushliteral(L, LUA_DIRSEP);
 		lua_concat(L, 2);
-		path = lua_tostring(L, -1);
-		len++;
 	}
-	memcpy(pi->pathname, path, len + 1);
-	pi->pathlen = len;
-	lua_pop(L, 1);
+	lua_pushvalue(L, index);               /* ... pathname diriter */
+	lua_insert(L, -2);                     /* ... diriter pathname */
+	lua_settable(L, LUA_REGISTRYINDEX);    /* ... */
 	return 0;
 }
 
-/* dir -- */
+/* diriter -- diriter */
 static int diriter_close(lua_State *L)
 {
 	struct diriter *pi = lua_touserdata(L, 1);
 	if (pi->dir) {
 		closedir(pi->dir);
 		pi->dir = 0;
+		lua_pushnil(L);
+		diriter_setpathname(L, 1);
 	}
 	return 0;
 }
 
 /* pathname -- iter state nil */
-/* dir ... -- entry */
+/* diriter ... -- entry */
 static int ex_dir(lua_State *L)
 {
 	const char *pathname;
@@ -228,13 +233,13 @@ static int ex_dir(lua_State *L)
 			pi->dir = 0;
 			return push_error(L);
 		}
-		lua_newtable(L);                       /* dir ... entry */
-		diriter_getpathname(L, 1);             /* dir ... entry dirpath */
-		lua_pushstring(L, d->d_name);          /* dir ... entry dirpath name */
-		lua_pushliteral(L, "name");            /* dir ... entry dirpath name "name" */
-		lua_pushvalue(L, -2);                  /* dir ... entry dirpath name "name" name */
-		lua_settable(L, -5);                   /* dir ... entry dirpath name */
-		lua_concat(L, 2);                      /* dir ... entry fullpath */
+		lua_newtable(L);                       /* diriter ... entry */
+		diriter_getpathname(L, 1);             /* diriter ... entry dirpath */
+		lua_pushstring(L, d->d_name);          /* diriter ... entry dirpath name */
+		lua_pushliteral(L, "name");            /* diriter ... entry dirpath name "name" */
+		lua_pushvalue(L, -2);                  /* diriter ... entry dirpath name "name" name */
+		lua_settable(L, -5);                   /* diriter ... entry dirpath name */
+		lua_concat(L, 2);                      /* diriter ... entry fullpath */
 		lua_replace(L, 1);                     /* fullpath ... entry */
 		lua_replace(L, 2);                     /* fullpath entry ... */
 		return ex_dirent(L);
@@ -264,11 +269,11 @@ static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long 
 /* file mode [offset [length]] -- true/nil error */
 static int ex_lock(lua_State *L)
 {
-	FILE **pf = checkuserdata(L, 1, LUA_FILEHANDLE);
+	FILE *f = check_file(L, 1);
 	const char *mode = luaL_checkstring(L, 2);
 	long offset = luaL_optnumber(L, 3, 0);
 	long length = luaL_optnumber(L, 4, 0);
-	return file_lock(L, *pf, mode, offset, length);
+	return file_lock(L, f, mode, offset, length);
 }
 
 /* file [offset [length]] -- true/nil error */
