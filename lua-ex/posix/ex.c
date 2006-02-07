@@ -284,12 +284,21 @@ static int ex_unlock(lua_State *L)
 	return ex_lock(L);
 }
 
+static int closeonexec(int d)
+{
+	int fl = fcntl(d, F_GETFD);
+	if (fl != -1)
+		fl = fcntl(d, F_SETFD, fl | FD_CLOEXEC);
+	return fl;
+}
 
 static int make_pipe(FILE **i, FILE **o)
 {
 	int fd[2];
 	if (-1 == pipe(fd))
 		return 0;
+	closeonexec(fd[0]);
+	closeonexec(fd[1]);
 	*i = fdopen(fd[0], "r");
 	*o = fdopen(fd[1], "w");
 	return 1;
@@ -306,7 +315,7 @@ static int ex_pipe(lua_State *L)
 	lua_pushvalue(L, -2);
 	lua_setmetatable(L, -2);
 	*(pf = lua_newuserdata(L, sizeof *pf)) = o;
-	lua_pushvalue(L, -2);
+	lua_pushvalue(L, -3);
 	lua_setmetatable(L, -2);
 	return 2;
 }
@@ -385,12 +394,12 @@ static int ex_spawn(lua_State *L)
 
 
 static const luaL_reg ex_iolib[] = {
-	{"pipe",  ex_pipe},
+	{"pipe",       ex_pipe},
 	{0,0}
 };
 static const luaL_reg ex_iofile_methods[] = {
-	{"lock",    ex_lock},
-	{"unlock",  ex_unlock},
+	{"lock",       ex_lock},
+	{"unlock",     ex_unlock},
 	{0,0}
 };
 static const luaL_reg ex_oslib[] = {
@@ -412,11 +421,12 @@ static const luaL_reg ex_oslib[] = {
 	{0,0}
 };
 static const luaL_reg ex_diriter_methods[] = {
-	{"__gc", diriter_close},
+	{"__gc",       diriter_close},
 	{0,0}
 };
 static const luaL_reg ex_process_methods[] = {
-	{"wait", process_wait},
+	{"wait",       process_wait},
+	{"__tostring", process_tostring},
 	{0,0}
 };
 
