@@ -151,17 +151,6 @@ static FILE *check_file(lua_State *L, int idx)
 	return *pf;
 }
 
-static BOOL GetFileInformationByPath(LPCSTR name, BY_HANDLE_FILE_INFORMATION *pinfo)
-{
-	HANDLE h = CreateFile(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
-	BOOL ret = h != INVALID_HANDLE_VALUE;
-	if (ret) {
-		ret = GetFileInformationByHandle(h, pinfo);
-		CloseHandle(h);
-	}
-	return ret;
-}
-
 static uint64_t get_size(const char *name)
 {
 	HANDLE h = CreateFile(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
@@ -360,6 +349,8 @@ static int make_pipe(FILE **i, FILE **o)
 	HANDLE ph[2];
 	if (0 == CreatePipe(ph+0, ph+1, 0, 0))
 		return 0;
+	SetHandleInformation(ph[0], HANDLE_FLAG_INHERIT, 0);
+	SetHandleInformation(ph[1], HANDLE_FLAG_INHERIT, 0);
 	*i = _fdopen(_open_osfhandle((long)ph[0], _O_RDONLY), "r");
 	*o = _fdopen(_open_osfhandle((long)ph[1], _O_WRONLY), "w");
 	return 1;
@@ -376,7 +367,7 @@ static int ex_pipe(lua_State *L)
 	lua_pushvalue(L, -2);
 	lua_setmetatable(L, -2);
 	*(pf = lua_newuserdata(L, sizeof *pf)) = o;
-	lua_pushvalue(L, -2);
+	lua_pushvalue(L, -3);
 	lua_setmetatable(L, -2);
 	return 2;
 }
@@ -455,12 +446,12 @@ static int ex_spawn(lua_State *L)
 
 
 static const luaL_reg ex_iolib[] = {
-	{"pipe",  ex_pipe},
+	{"pipe",       ex_pipe},
 	{0,0}
 };
 static const luaL_reg ex_iofile_methods[] = {
-	{"lock",    ex_lock},
-	{"unlock",  ex_unlock},
+	{"lock",       ex_lock},
+	{"unlock",     ex_unlock},
 	{0,0}
 };
 static const luaL_reg ex_oslib[] = {
@@ -482,11 +473,12 @@ static const luaL_reg ex_oslib[] = {
 	{0,0}
 };
 static const luaL_reg ex_diriter_methods[] = {
-	{"__gc", diriter_close},
+	{"__gc",       diriter_close},
 	{0,0}
 };
 static const luaL_reg ex_process_methods[] = {
-	{"wait", process_wait},
+	{"wait",       process_wait},
+	{"__tostring", process_tostring},
 	{0,0}
 };
 

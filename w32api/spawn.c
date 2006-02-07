@@ -135,7 +135,10 @@ int spawn_param_execute(struct spawn_params *p, struct process *proc)
 	int ret = CreateProcess(0, c, 0, 0, 0, 0, e, 0, &p->si, &pi);
 	if (e) free(e);
 	free(c);
-	if (ret) proc->hProcess = pi.hProcess;
+	if (ret) {
+		proc->hProcess = pi.hProcess;
+		proc->dwProcessId = pi.dwProcessId;
+	}
 	return ret;
 }
 
@@ -151,5 +154,16 @@ int process_wait(lua_State *L)
 		p->status = exitcode;
 	}
 	lua_pushnumber(L, p->status);
+	return 1;
+}
+
+/* proc -- string */
+int process_tostring(lua_State *L)
+{
+	struct process *p = checkuserdata(L, 1, PROCESS_HANDLE);
+	char buf[40];
+	lua_pushlstring(L, buf,
+		sprintf(buf, "process (%lu, %s)", (unsigned long)p->dwProcessId,
+			p->status==-1 ? "running" : "terminated"));
 	return 1;
 }

@@ -133,3 +133,14 @@ int process_wait(lua_State *L)
 	lua_pushnumber(L, p->status);
 	return 1;
 }
+
+/* proc -- string */
+int process_tostring(lua_State *L)
+{
+	struct process *p = checkuserdata(L, 1, PROCESS_HANDLE);
+	char buf[40];
+	lua_pushlstring(L, buf,
+		sprintf(buf, "process (%lu, %s)", (unsigned long)p->pid,
+			p->status==-1 ? "running" : "terminated"));
+	return 1;
+}

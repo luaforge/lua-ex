@@ -15,6 +15,7 @@ struct spawn_params {
 struct process {
     int status;
     HANDLE hProcess;
+	DWORD dwProcessId;
 };
 
 void spawn_param_filename(struct spawn_params *p);
@@ -25,5 +26,6 @@ void spawn_param_redirects(struct spawn_params *p);
 int spawn_param_execute(struct spawn_params *p, struct process *proc);
 
 int process_wait(lua_State *L);
+int process_tostring(lua_State *L);
 
 #endif/*SPAWN_H*/
