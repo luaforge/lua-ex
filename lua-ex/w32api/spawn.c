@@ -8,7 +8,10 @@
 
 #include "spawn.h"
 
-extern void *checkuserdata(lua_State *L, int index, const char *name);
+#include <assert.h>
+#define debug(...) fprintf(stderr, __VA_ARGS__)
+#include "../lds.c"
+
 extern HANDLE get_handle(FILE *f);
 extern int push_error(lua_State *L);
 
@@ -17,33 +20,45 @@ static int needs_quoting(const char *s)
 	return s[0] != '"' && strchr(s, ' ');
 }
 
-/* filename ... */
-void spawn_param_filename(struct spawn_params *p)
-{
-	/* XXX luaL_checkstring is confusing here */
-	p->cmdline = luaL_checkstring(p->L, 1);
-	if (needs_quoting(p->cmdline)) {
-		lua_pushliteral(p->L, "\"");   /* cmd ... q */
-		lua_pushvalue(p->L, 1);        /* cmd ... q cmd */
-		lua_pushvalue(p->L, -2);       /* cmd ... q cmd q */
-		lua_concat(p->L, 3);           /* cmd ... "cmd" */
-		lua_replace(p->L, 1);          /* "cmd" ... */
-		p->cmdline = lua_tostring(p->L, 1);
-	}
-}
+struct spawn_params {
+	lua_State *L;
+	const char *cmdline;
+	const char *environment;
+	STARTUPINFO si;
+};
 
-/* -- */
-void spawn_param_defaults(struct spawn_params *p)
+struct spawn_params *spawn_param_init(lua_State *L)
 {
+	struct spawn_params *p = lua_newuserdata(L, sizeof *p);
+	p->L = L;
+	p->cmdline = 0;
 	p->environment = 0;
 	memset(&p->si, 0, sizeof p->si);
-	p->si.cb = sizeof p->si;
+	p->si.cb = 0;
+	p->si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+	p->si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+	p->si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+	return p;
+}
+
+/* filename ... */
+void spawn_param_filename(struct spawn_params *p, const char *filename)
+{
+	p->cmdline = filename;
+	if (needs_quoting(p->cmdline)) {
+		lua_pushliteral(p->L, "\"");       /* cmd ... q */
+		lua_pushstring(p->L, p->cmdline);  /* cmd ... q cmd */
+		lua_pushvalue(p->L, -2);           /* cmd ... q cmd q */
+		lua_concat(p->L, 3);               /* cmd ... "cmd" */
+		p->cmdline = lua_tostring(p->L, -1);
+	}
 }
 
 /* cmd opts ... argtab -- cmd opts ... cmdline */
 void spawn_param_args(struct spawn_params *p)
 {
 	lua_State *L = p->L;
+	debug("spawn_param_args:"); debug_stack(L);
 	luaL_Buffer args;
 	luaL_buffinit(L, &args);
 	size_t i, n = lua_objlen(L, -1);
@@ -61,7 +76,7 @@ void spawn_param_args(struct spawn_params *p)
 	}
 	luaL_pushresult(&args);        /* ... argtab argstr */
 	lua_pushvalue(L, 1);           /* cmd opts ... argtab argstr cmd */
-	lua_replace(L, -2);            /* cmd opts ... argtab cmd argstr */
+	lua_insert(L, -2);             /* cmd opts ... argtab cmd argstr */
 	lua_concat(L, 2);              /* cmd opts ... argtab cmdline */
 	lua_replace(L, -2);            /* cmd opts ... cmdline */
 	p->cmdline = lua_tostring(L, -1);
@@ -99,53 +114,52 @@ void spawn_param_env(struct spawn_params *p)
 	p->environment = lua_tostring(L, -1);
 }
 
-/* _ opts ... */
-static int get_redirect(struct spawn_params *p, const char *stdname, HANDLE *ph)
+void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
 {
-	int ret;
-	lua_getfield(p->L, 2, stdname);
-	if ((ret = !lua_isnil(p->L, -1))) {
-		/* XXX checkuserdata is confusing here */
-		FILE **pf = checkuserdata(p->L, -1, LUA_FILEHANDLE);
-		*ph = get_handle(*pf);
+	HANDLE h = get_handle(f);
+	switch (stdname[3]) {
+	case 'i': p->si.hStdInput = h; break;
+	case 'o': p->si.hStdOutput = h; break;
+	case 'e': p->si.hStdError = h; break;
 	}
-	lua_pop(p->L, 1);
-	return ret;
+	p->si.dwFlags |= STARTF_USESTDHANDLES;
 }
 
-/* _ opts ... */
-void spawn_param_redirects(struct spawn_params *p)
-{
-	p->si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-	p->si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-	p->si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
-	if (get_redirect(p, "stdin",  &p->si.hStdInput)
-		| get_redirect(p, "stdout", &p->si.hStdOutput)
-		| get_redirect(p, "stderr", &p->si.hStdError))
-		p->si.dwFlags = STARTF_USESTDHANDLES;
-}
+struct process {
+    int status;
+    HANDLE hProcess;
+	DWORD dwProcessId;
+};
 
-int spawn_param_execute(struct spawn_params *p, struct process *proc)
+int spawn_param_execute(struct spawn_params *p)
 {
-	char *c = strdup(p->cmdline);
-	char *e = (char *)p->environment; // strdup(p->environment);
+	lua_State *L = p->L;
+	struct process *proc;
+	char *c, *e;
 	PROCESS_INFORMATION pi;
+	BOOL ret;
+
+	proc = lua_newuserdata(L, sizeof *proc);       /* cmd opts ... proc */
+	luaL_getmetatable(L, PROCESS_HANDLE);          /* cmd opts ... proc M */
+	lua_setmetatable(L, -2);                       /* cmd opts ... proc */
 	proc->status = -1;
+	c = strdup(p->cmdline);
+	e = (char *)p->environment; /* strdup(p->environment); */
 	/* XXX does CreateProcess modify its environment argument? */
-	int ret = CreateProcess(0, c, 0, 0, 0, 0, e, 0, &p->si, &pi);
-	if (e) free(e);
+	ret = CreateProcess(0, c, 0, 0, 0, 0, e, 0, &p->si, &pi);
+	/* if (e) free(e); */
 	free(c);
-	if (ret) {
-		proc->hProcess = pi.hProcess;
-		proc->dwProcessId = pi.dwProcessId;
-	}
-	return ret;
+	if (!ret)
+		return push_error(L);
+	proc->hProcess = pi.hProcess;
+	proc->dwProcessId = pi.dwProcessId;
+	return 1;
 }
 
 /* proc -- exitcode/nil error */
 int process_wait(lua_State *L)
 {
-	struct process *p = checkuserdata(L, 1, PROCESS_HANDLE);
+	struct process *p = luaL_checkudata(L, 1, PROCESS_HANDLE);
 	if (p->status == -1) {
 		DWORD exitcode;
 		if (WAIT_FAILED == WaitForSingleObject(p->hProcess, INFINITE)
@@ -160,7 +174,7 @@ int process_wait(lua_State *L)
 /* proc -- string */
 int process_tostring(lua_State *L)
 {
-	struct process *p = checkuserdata(L, 1, PROCESS_HANDLE);
+	struct process *p = luaL_checkudata(L, 1, PROCESS_HANDLE);
 	char buf[40];
 	lua_pushlstring(L, buf,
 		sprintf(buf, "process (%lu, %s)", (unsigned long)p->dwProcessId,

@@ -4,27 +4,36 @@
 
 #include <unistd.h>
 #include <sys/wait.h>
+#ifndef MISSING_POSIX_SPAWN
+#include <spawn.h>
+#else
+#include "posix_spawn.h"
+#endif
 
 #include "spawn.h"
 
-extern int push_error(lua_State *L);
-extern void *checkuserdata(lua_State *L, int index, const char *name);
+struct spawn_params {
+	lua_State *L;
+	const char *command, **argv, **envp;
+	posix_spawn_file_actions_t redirect;
+};
 
-/* filename ... */
-void spawn_param_filename(struct spawn_params *p)
+extern int push_error(lua_State *L);
+extern FILE *check_file(lua_State *L, int idx, const char *argname);
+
+struct spawn_params *spawn_param_init(lua_State *L)
 {
-	/* XXX confusing */
-	p->command = luaL_checkstring(p->L, 1);
+	struct spawn_params *p = lua_newuserdata(L, sizeof *p);
+	p->L = L;
+	p->command = 0;
+	p->argv = p->envp = 0;
+	posix_spawn_file_actions_init(&p->redirect);
+	return p;
 }
 
-/* -- */
-void spawn_param_defaults(struct spawn_params *p)
+void spawn_param_filename(struct spawn_params *p, const char *filename)
 {
-	p->argv = lua_newuserdata(p->L, 2 * sizeof *p->argv);
-	p->argv[0] = p->command;
-	p->argv[1] = 0;
-	p->envp = (const char **)environ;
-	p->has_actions = 0;
+	p->command = filename;
 }
 
 /* Converts a Lua array of strings to a null-terminated array of char pointers.
@@ -86,44 +95,50 @@ void spawn_param_env(struct spawn_params *p)
 	make_vector(p->L);                     /* ... arr */
 }
 
-/* _ opts ... */
-static int get_redirect(struct spawn_params *p, const char *stdname, int descriptor)
+void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
 {
-	int ret;
-	lua_getfield(p->L, 2, stdname);
-	if ((ret = !lua_isnil(p->L, -1)))
-		/* XXX checkuserdata is confusing here */
-		posix_spawn_file_actions_adddup2(&p->file_actions, 
-			fileno(checkuserdata(p->L, -1, LUA_FILEHANDLE)), descriptor);
-	lua_pop(p->L, 1);
-	return ret;
+	int d;
+	switch (stdname[3]) {
+	case 'i': d = STDIN_FILENO; break;
+	case 'o': d = STDOUT_FILENO; break;
+	case 'e': d = STDERR_FILENO; break;
+	}
+	debug("duplicating %d to %d\n", fileno(f), d);
+	posix_spawn_file_actions_adddup2(&p->redirect, fileno(f), d);
 }
 
-/* _ opts ... */
-void spawn_param_redirects(struct spawn_params *p)
-{
-	posix_spawn_file_actions_init(&p->file_actions);
-	p->has_actions = 1;
-	get_redirect(p, "stdin", STDIN_FILENO);
-	get_redirect(p, "stdout", STDOUT_FILENO);
-	get_redirect(p, "stderr", STDERR_FILENO);
-}
+struct process {
+	int status;
+	pid_t pid;
+};
 
-int spawn_param_execute(struct spawn_params *p, struct process *proc)
+int spawn_param_execute(struct spawn_params *p)
 {
+	lua_State *L = p->L;
+	struct process *proc = lua_newuserdata(L, sizeof *proc);
 	int ret;
+	luaL_getmetatable(L, PROCESS_HANDLE);
+	lua_setmetatable(L, -2);
 	proc->status = -1;
-	ret = posix_spawnp(&proc->pid, p->command, &p->file_actions, 0, (char *const *)p->argv, (char *const *)p->envp);
-	if (p->has_actions)
-		posix_spawn_file_actions_destroy(&p->file_actions);
-	return ret == 0;
+	if (!p->argv) {
+		p->argv = lua_newuserdata(L, 2 * sizeof *p->argv);
+		p->argv[0] = p->command;
+		p->argv[1] = 0;
+	}
+	if (!p->envp)
+		p->envp = (const char **)environ;
+	ret = posix_spawnp(&proc->pid, p->command, &p->redirect, 0, (char *const *)p->argv, (char *const *)p->envp);
+	posix_spawn_file_actions_destroy(&p->redirect);
+	return ret != 0 ? push_error(L) : 1;
 }
 
+
+extern int push_error(lua_State *L);
 
 /* proc -- exitcode/nil error */
 int process_wait(lua_State *L)
 {
-	struct process *p = checkuserdata(L, 1, PROCESS_HANDLE);
+	struct process *p = luaL_checkudata(L, 1, PROCESS_HANDLE);
 	if (p->status == -1) {
 		int status;
 		if (-1 == waitpid(p->pid, &status, 0))
@@ -137,7 +152,7 @@ int process_wait(lua_State *L)
 /* proc -- string */
 int process_tostring(lua_State *L)
 {
-	struct process *p = checkuserdata(L, 1, PROCESS_HANDLE);
+	struct process *p = luaL_checkudata(L, 1, PROCESS_HANDLE);
 	char buf[40];
 	lua_pushlstring(L, buf,
 		sprintf(buf, "process (%lu, %s)", (unsigned long)p->pid,
