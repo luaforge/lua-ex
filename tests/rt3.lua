@@ -2,7 +2,7 @@
 require "ex"
 
 print"os.chdir"
-assert(os.chdir(".."))
+assert(os.chdir("tests"))
 print(os.currentdir())
 
 print"os.mkdir"
