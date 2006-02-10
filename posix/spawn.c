@@ -1,15 +1,12 @@
-#include <assert.h>
-
 #include <lua.h>
-#include <lualib.h>
 #include <lauxlib.h>
 
 #include <unistd.h>
 #include <sys/wait.h>
-#ifndef MISSING_POSIX_SPAWN
-#include <spawn.h>
-#else
+#if MISSING_POSIX_SPAWN
 #include "posix_spawn.h"
+#else
+#include <spawn.h>
 #endif
 
 #include "spawn.h"
@@ -21,7 +18,6 @@ struct spawn_params {
 };
 
 extern int push_error(lua_State *L);
-extern FILE *check_file(lua_State *L, int idx, const char *argname);
 
 struct spawn_params *spawn_param_init(lua_State *L)
 {
@@ -105,7 +101,6 @@ void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
 	case 'o': d = STDOUT_FILENO; break;
 	case 'e': d = STDERR_FILENO; break;
 	}
-	debug("duplicating %d to %d\n", fileno(f), d);
 	posix_spawn_file_actions_adddup2(&p->redirect, fileno(f), d);
 }
 
@@ -134,9 +129,6 @@ int spawn_param_execute(struct spawn_params *p)
 	posix_spawn_file_actions_destroy(&p->redirect);
 	return ret != 0 ? push_error(L) : 1;
 }
-
-
-extern int push_error(lua_State *L);
 
 /* proc -- exitcode/nil error */
 int process_wait(lua_State *L)

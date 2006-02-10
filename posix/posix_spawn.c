@@ -8,8 +8,6 @@
 
 #include "posix_spawn.h"
 
-#define nelemof(A) (sizeof A / sizeof *A)
-
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *act)
 {
 	act->dups[0] = act->dups[1] = act->dups[2] = -1;
@@ -22,11 +20,11 @@ int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *act, int d, int
 		errno = EBADF;
 		return -1;
 	}
-	if (2 < d) {
+	if (2 < n) {
 		errno = EINVAL;
 		return -1;
 	}
-	act->dups[d] = n;
+	act->dups[n] = d;
 	return 0;
 }
 
@@ -46,20 +44,19 @@ int posix_spawnp(pid_t *restrict ppid,
 		return EINVAL;
 	if (attrp)
 		return EINVAL;
-	/* check act actions? */
 	switch (*ppid = fork()) {
 	case -1: return -1;
 	default: return 0;
 	case 0:
 		if (act) {
-			size_t i;
-			for (i = 0; i < nelemof(act->dups); i++)
-				if (act->dups[i] > -1)
-					dup2(i, act->dups[i]);
+			int i;
+			for (i = 0; i < 3; i++)
+				if (act->dups[i] != -1 && -1 == dup2(act->dups[i], i))
+					_exit(111);
 		}
 		environ = (char **)envp;
 		execvp(path, argv);
-		_exit(EXIT_FAILURE);
+		_exit(111);
 		/*NOTREACHED*/
 	}
 }

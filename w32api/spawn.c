@@ -1,19 +1,17 @@
 #include <stdlib.h>
 
 #include <lua.h>
-#include <lualib.h>
 #include <lauxlib.h>
 
 #include <windows.h>
 
 #include "spawn.h"
 
-#include <assert.h>
-#define debug(...) fprintf(stderr, __VA_ARGS__)
-#include "../lds.c"
+#define debug(...) /* fprintf(stderr, __VA_ARGS__) */
+#define debug_stack(L) /* #include "../lds.c" */
 
-extern HANDLE get_handle(FILE *f);
 extern int push_error(lua_State *L);
+extern HANDLE get_handle(FILE *f);
 
 static int needs_quoting(const char *s)
 {
@@ -41,7 +39,6 @@ struct spawn_params *spawn_param_init(lua_State *L)
 	return p;
 }
 
-/* filename ... */
 void spawn_param_filename(struct spawn_params *p, const char *filename)
 {
 	p->cmdline = filename;
@@ -82,7 +79,7 @@ void spawn_param_args(struct spawn_params *p)
 	p->cmdline = lua_tostring(L, -1);
 }
 
-/* ... envtab */
+/* ... envtab/nil */
 void spawn_param_env(struct spawn_params *p)
 {
 	lua_State *L = p->L;
@@ -126,8 +123,8 @@ void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
 }
 
 struct process {
-    int status;
-    HANDLE hProcess;
+	int status;
+	HANDLE hProcess;
 	DWORD dwProcessId;
 };
 

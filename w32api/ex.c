@@ -350,7 +350,6 @@ static int ex_unlock(lua_State *L)
 }
 
 
-/* -- LUA_FILEHANDLE file file */
 static int make_pipe(FILE **i, FILE **o)
 {
 	HANDLE ph[2];

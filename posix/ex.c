@@ -289,6 +289,7 @@ static int ex_unlock(lua_State *L)
 	return ex_lock(L);
 }
 
+
 static int closeonexec(int d)
 {
 	int fl = fcntl(d, F_GETFD);
