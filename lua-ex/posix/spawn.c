@@ -1,3 +1,5 @@
+#include <assert.h>
+
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
@@ -115,11 +117,8 @@ struct process {
 int spawn_param_execute(struct spawn_params *p)
 {
 	lua_State *L = p->L;
-	struct process *proc = lua_newuserdata(L, sizeof *proc);
 	int ret;
-	luaL_getmetatable(L, PROCESS_HANDLE);
-	lua_setmetatable(L, -2);
-	proc->status = -1;
+	struct process *proc;
 	if (!p->argv) {
 		p->argv = lua_newuserdata(L, 2 * sizeof *p->argv);
 		p->argv[0] = p->command;
@@ -127,6 +126,10 @@ int spawn_param_execute(struct spawn_params *p)
 	}
 	if (!p->envp)
 		p->envp = (const char **)environ;
+	proc = lua_newuserdata(L, sizeof *proc);
+	luaL_getmetatable(L, PROCESS_HANDLE);
+	lua_setmetatable(L, -2);
+	proc->status = -1;
 	ret = posix_spawnp(&proc->pid, p->command, &p->redirect, 0, (char *const *)p->argv, (char *const *)p->envp);
 	posix_spawn_file_actions_destroy(&p->redirect);
 	return ret != 0 ? push_error(L) : 1;

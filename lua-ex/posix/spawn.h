@@ -1,6 +1,7 @@
 #ifndef SPAWN_H
 #define SPAWN_H
 
+#include <stdio.h>
 #include <lua.h>
 
 #define PROCESS_HANDLE "process"

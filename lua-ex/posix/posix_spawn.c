@@ -5,7 +5,8 @@
 #include <unistd.h>
 #include <limits.h>
 #include <sys/types.h>
-#include "spawn.h"
+
+#include "posix_spawn.h"
 
 #define nelemof(A) (sizeof A / sizeof *A)
 
@@ -50,10 +51,12 @@ int posix_spawnp(pid_t *restrict ppid,
 	case -1: return -1;
 	default: return 0;
 	case 0:
-		if (act)
-			for (size_t i = 0; i < nelemof(act->dups); i++)
+		if (act) {
+			size_t i;
+			for (i = 0; i < nelemof(act->dups); i++)
 				if (act->dups[i] > -1)
 					dup2(i, act->dups[i]);
+		}
 		environ = (char **)envp;
 		execvp(path, argv);
 		_exit(EXIT_FAILURE);

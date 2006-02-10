@@ -2,6 +2,10 @@
 #include <signal.h>
 #include <sys/types.h>
 
+#if __STDC_VERSION__ < 199901L
+#define restrict
+#endif
+
 typedef void *posix_spawnattr_t;
 
 enum {

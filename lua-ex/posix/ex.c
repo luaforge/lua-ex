@@ -1,17 +1,16 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <ctype.h>
 #include <errno.h>
-#include <limits.h>
+#include <string.h>
 
 #include <lua.h>
 #include <lualib.h>
 #include <lauxlib.h>
 
 #include <unistd.h>
-#include <fcntl.h>
 #include <dirent.h>
+#include <fcntl.h>
 #include <sys/stat.h>
 
 #include "spawn.h"
@@ -121,11 +120,11 @@ FILE *check_file(lua_State *L, int idx, const char *argname)
 	FILE **pf;
 	if (idx > 0) pf = luaL_checkudata(L, idx, LUA_FILEHANDLE);
 	else {
-		idx = absindex(idx);
+		idx = absindex(L, idx);
 		pf = lua_touserdata(L, idx);
 		luaL_getmetatable(L, LUA_FILEHANDLE);
 		if (!pf || !lua_getmetatable(L, idx) || !lua_rawequal(L, -1, -2))
-			luaL_error(L, "%s option: expected %s, got %s",
+			luaL_error(L, "bad %s option (%s expected, got %s)",
 				argname, LUA_FILEHANDLE, luaL_typename(L, idx));
 		lua_pop(L, 2);
 	}
@@ -137,8 +136,10 @@ FILE *check_file(lua_State *L, int idx, const char *argname)
 static int ex_dirent(lua_State *L)
 {
 	struct stat st;
+	int isdir;
+	lua_Number size;
 	switch (lua_type(L, 1)) {
-	default: return luaL_argerror(L, 1, "expected file or pathname");
+	default: return luaL_typerror(L, 1, "file or pathname");
 	case LUA_TSTRING: {
 		const char *name = lua_tostring(L, 1);
 		if (-1 == stat(name, &st))
@@ -150,18 +151,19 @@ static int ex_dirent(lua_State *L)
 			return push_error(L);
 		} break;
 	}
+	isdir = S_ISDIR(st.st_mode);
 	if (lua_type(L, 2) != LUA_TTABLE) {
 		lua_newtable(L);
 		lua_replace(L, 2);
 	}
 	lua_pushliteral(L, "type");
-	if (S_ISDIR(st.st_mode))
+	if (isdir)
 		lua_pushliteral(L, "directory");
 	else
 		lua_pushliteral(L, "file");
 	lua_settable(L, 2);
 	lua_pushliteral(L, "size");
-	lua_pushnumber(L, st.st_size);
+	lua_pushnumber(L, size);
 	lua_settable(L, 2);
 	lua_settop(L, 2);
 	return 1;
@@ -216,7 +218,7 @@ static int ex_dir(lua_State *L)
 	struct diriter *pi;
 	struct dirent *d;
 	switch (lua_type(L, 1)) {
-	default: return luaL_argerror(L, 1, "expected pathname");
+	default: return luaL_typerror(L, 1, "pathname");
 	case LUA_TSTRING:
 		pathname = lua_tostring(L, 1);
 		lua_pushcfunction(L, ex_dir);       /* pathname ... iter */
@@ -313,7 +315,6 @@ static int ex_pipe(lua_State *L)
 	FILE *i, *o, **pf;
 	if (!make_pipe(&i, &o))
 		return push_error(L);
-	debug("make_pipe returns %p<-%p\n", i, o);
 	luaL_getmetatable(L, LUA_FILEHANDLE);       /* M */
 	*(pf = lua_newuserdata(L, sizeof *pf)) = i; /* M i */
 	lua_pushvalue(L, -2);                       /* M i M */
@@ -337,9 +338,20 @@ static void get_redirect(lua_State *L, int idx, const char *stdname, struct spaw
 /* args-opts -- true/nil error */
 static int ex_spawn(lua_State *L)
 {
-	struct spawn_params *params = spawn_param_init(L);
+	struct spawn_params *params;
+	int have_options;
 
-	if (lua_type(L, 1) == LUA_TTABLE) {
+	switch (lua_type(L, 1)) {
+	default: return luaL_typerror(L, 1, "string or table");
+	case LUA_TSTRING:
+		switch (lua_type(L, 2)) {
+		default: return luaL_typerror(L, 2, "table");
+		case LUA_TNONE: have_options = 0; break;
+		case LUA_TTABLE: have_options = 1; break;
+		}
+		break;
+	case LUA_TTABLE:
+		have_options = 1;
 		lua_getfield(L, 1, "command");          /* opts ... cmd */
 		if (!lua_isnil(L, -1)) {
 			/* convert {command=command,arg1,...} to command {arg1,...} */
@@ -356,21 +368,23 @@ static int ex_spawn(lua_State *L)
 			}
 			lua_rawseti(L, 2, n);               /* cmd opts ... */
 		}
+		if (lua_type(L, 1) != LUA_TSTRING)
+			return luaL_error(L, "bad command option (string expected, got %s)",
+				luaL_typename(L, 1));
+		break;
 	}
 
+	params = spawn_param_init(L);
+
 	/* get filename to execute */
-	if (lua_type(L, 1) != LUA_TSTRING)
-		return luaL_error(L, "command option: expected string, got %s", luaL_typename(L, 1));
 	spawn_param_filename(params, lua_tostring(L, 1));
 
 	/* get arguments, environment, and redirections */
-	switch (lua_type(L, 2)) {
-	default: return luaL_argerror(L, 2, "expected options table");
-	case LUA_TNONE: break;
-	case LUA_TTABLE:
+	if (have_options) {
 		lua_getfield(L, 2, "args");             /* cmd opts ... argtab */
 		switch (lua_type(L, -1)) {
-		default: return luaL_error(L, "args option must be an array");
+		default: return luaL_error(L, "bad args option (table expected, got %s)",
+			luaL_typename(L, -1));
 		case LUA_TNIL:
 			lua_pop(L, 1);                      /* cmd opts ... */
 			lua_pushvalue(L, 2);                /* cmd opts ... opts */
@@ -383,7 +397,8 @@ static int ex_spawn(lua_State *L)
 		}
 		lua_getfield(L, 2, "env");              /* cmd opts ... envtab */
 		switch (lua_type(L, -1)) {
-		default: return luaL_error(L, "env option must be a table");
+		default: return luaL_error(L, "bad env option (table expected, got %s)",
+			luaL_typename(L, -1));
 		case LUA_TNIL:
 		case LUA_TTABLE:
 			spawn_param_env(params);            /* cmd opts ... */
@@ -392,8 +407,8 @@ static int ex_spawn(lua_State *L)
 		get_redirect(L, 2, "stdin", params);    /* cmd opts ... */
 		get_redirect(L, 2, "stdout", params);   /* cmd opts ... */
 		get_redirect(L, 2, "stderr", params);   /* cmd opts ... */
-		break;
 	}
+
 	return spawn_param_execute(params);         /* proc/nil error */
 }
 
@@ -486,9 +501,7 @@ int luaopen_ex(lua_State *L)
 	/* proc metatable */
 	luaL_newmetatable(L, PROCESS_HANDLE);       /* ex . P */
 	copy_fields(L, ex_process_methods, 1, -1);  /* ex . P */
-	lua_pushliteral(L, "__index");              /* ex . P __index */
-	lua_pushvalue(L, -2);                       /* ex . P __index P */
-	lua_settable(L, -3);                        /* ex . P */
+	lua_setfield(L, -1, "__index");             /* ex . P */
 
 	lua_settop(L, 1);                           /* ex */
 	return 1;
