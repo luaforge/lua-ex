@@ -27,15 +27,11 @@ struct spawn_params {
 
 struct spawn_params *spawn_param_init(lua_State *L)
 {
+	static const STARTUPINFO si = {sizeof si};
 	struct spawn_params *p = lua_newuserdata(L, sizeof *p);
 	p->L = L;
-	p->cmdline = 0;
-	p->environment = 0;
-	memset(&p->si, 0, sizeof p->si);
-	p->si.cb = 0;
-	p->si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
-	p->si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
-	p->si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+	p->cmdline = p->environment = 0;
+	p->si = si;
 	return p;
 }
 
@@ -114,12 +110,18 @@ void spawn_param_env(struct spawn_params *p)
 void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
 {
 	HANDLE h = get_handle(f);
+	SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
+	if (!(p->si.dwFlags & STARTF_USESTDHANDLES)) {
+		p->si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
+		p->si.hStdOutput = GetStdHandle(STD_OUTPUT_HANDLE);
+		p->si.hStdError  = GetStdHandle(STD_ERROR_HANDLE);
+		p->si.dwFlags |= STARTF_USESTDHANDLES;
+	}
 	switch (stdname[3]) {
 	case 'i': p->si.hStdInput = h; break;
 	case 'o': p->si.hStdOutput = h; break;
 	case 'e': p->si.hStdError = h; break;
 	}
-	p->si.dwFlags |= STARTF_USESTDHANDLES;
 }
 
 struct process {
@@ -143,7 +145,7 @@ int spawn_param_execute(struct spawn_params *p)
 	c = strdup(p->cmdline);
 	e = (char *)p->environment; /* strdup(p->environment); */
 	/* XXX does CreateProcess modify its environment argument? */
-	ret = CreateProcess(0, c, 0, 0, 0, 0, e, 0, &p->si, &pi);
+	ret = CreateProcess(0, c, 0, 0, TRUE, 0, e, 0, &p->si, &pi);
 	/* if (e) free(e); */
 	free(c);
 	if (!ret)

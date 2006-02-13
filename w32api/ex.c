@@ -312,8 +312,9 @@ static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long 
 	HANDLE h = get_handle(f);
 	DWORD flags;
 	LARGE_INTEGER len = {0,0};
-	OVERLAPPED ov = {.hEvent = INVALID_HANDLE_VALUE};
+	OVERLAPPED ov = {0};
 	BOOL ret;
+	ov.hEvent = INVALID_HANDLE_VALUE;
 	if (length) len.LowPart = length;
 	else len.LowPart = GetFileSize(h, &len.HighPart);
 	ov.Offset = offset;
