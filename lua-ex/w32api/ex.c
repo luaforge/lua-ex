@@ -137,6 +137,22 @@ static int ex_currentdir(lua_State *L)
 	return 1;
 }
 
+/* -- pathname/nil error */
+static int ex_remove(lua_State *L)
+{
+       const char *pathname = luaL_checkstring(L, 1);
+       DWORD attr = GetFileAttributes(pathname);
+       if (attr & FILE_ATTRIBUTE_DIRECTORY) {
+               if (!RemoveDirectory(pathname))
+                       return push_error(L);
+       }
+       else {
+               if (!DeleteFile(pathname))
+                       return push_error(L);
+       }
+       lua_pushboolean(L, 1);
+       return 1;
+}
 
 FILE *check_file(lua_State *L, int idx, const char *argname)
 {
@@ -487,6 +503,7 @@ static const luaL_reg ex_oslib[] = {
 	{"chdir",      ex_chdir},
 	{"mkdir",      ex_mkdir},
 	{"currentdir", ex_currentdir},
+	{"remove",     ex_remove},
 
 	{"dir",        ex_dir},
 	{"dirent",     ex_dirent},
