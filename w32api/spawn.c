@@ -4,14 +4,15 @@
 #include <lauxlib.h>
 
 #include <windows.h>
+#include <io.h>
 
 #include "spawn.h"
+#include "pusherror.h"
 
 #define debug(...) /* fprintf(stderr, __VA_ARGS__) */
 #define debug_stack(L) /* #include "../lds.c" */
 
-extern int push_error(lua_State *L);
-extern HANDLE get_handle(FILE *f);
+#define file_handle(fp) (HANDLE)_get_osfhandle(fileno(fp))
 
 static int needs_quoting(const char *s)
 {
@@ -109,7 +110,7 @@ void spawn_param_env(struct spawn_params *p)
 
 void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
 {
-	HANDLE h = get_handle(f);
+	HANDLE h = file_handle(f);
 	SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 	if (!(p->si.dwFlags & STARTF_USESTDHANDLES)) {
 		p->si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);
@@ -149,7 +150,7 @@ int spawn_param_execute(struct spawn_params *p)
 	/* if (e) free(e); */
 	free(c);
 	if (!ret)
-		return push_error(L);
+		return windows_pushlasterror(L);
 	proc->hProcess = pi.hProcess;
 	proc->dwProcessId = pi.dwProcessId;
 	return 1;
@@ -163,7 +164,7 @@ int process_wait(lua_State *L)
 		DWORD exitcode;
 		if (WAIT_FAILED == WaitForSingleObject(p->hProcess, INFINITE)
 		    || !GetExitCodeProcess(p->hProcess, &exitcode))
-			return push_error(L);
+			return windows_pushlasterror(L);
 		p->status = exitcode;
 	}
 	lua_pushnumber(L, p->status);
