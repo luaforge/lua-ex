@@ -3,44 +3,22 @@
 #include <ctype.h>
 #include <errno.h>
 
-#include <lua.h>
-#include <lualib.h>
-#include <lauxlib.h>
-
 #include <windows.h>
 #include <io.h>
 #include <fcntl.h>
 #include <sys/locking.h>
 
+#include "lua.h"
+#include "lualib.h"
+#include "lauxlib.h"
+
 #include "spawn.h"
+#include "pusherror.h"
 
 
 #define absindex(L,i) ((i)>0?(i):lua_gettop(L)+(i)+1)
 
-/* return HANDLE from a FILE */
-extern HANDLE get_handle(FILE *f)
-{
-	return (HANDLE)_get_osfhandle(fileno(f));
-}
-
-
-/* -- nil error */
-extern int push_error(lua_State *L)
-{
-	DWORD error = GetLastError();
-	char buffer[1024];
-	size_t len = sprintf(buffer, "%lu (0x%lX): ", error, error);
-	size_t res = FormatMessage(
-			FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_SYSTEM,
-			0, error, 0, buffer + len, sizeof buffer - len, 0);
-	if (res) /* trim spaces */
-		for (len += res; len > 0 && isspace(buffer[len - 1]); len--) ;
-	else
-		len += sprintf(buffer + len, "<error string not available>");
-	lua_pushnil(L);
-	lua_pushlstring(L, buffer, len);
-	return 2;
-}
+#define file_handle(fp) (HANDLE)_get_osfhandle(fileno(fp))
 
 
 /* name -- value/nil */
@@ -54,29 +32,20 @@ static int ex_getenv(lua_State *L)
 		len = GetEnvironmentVariable(nam, val, sizeof val);
 	}
 	if (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND)
-		return push_error(L);
+		return windows_pushlasterror(L);
 	lua_pushlstring(L, val, len);
 	if (val != sval) free(val);
 	return 1;
 }
 
-/* name value -- true/nil error */
+/* name value -- true/nil error
+ * name nil -- true/nil error */
 static int ex_setenv(lua_State *L)
 {
 	const char *nam = luaL_checkstring(L, 1);
-	const char *val = luaL_checkstring(L, 2);
+	const char *val = lua_tostring(L, 2);
 	if (!SetEnvironmentVariable(nam, val))
-		return push_error(L);
-	lua_pushboolean(L, 1);
-	return 1;
-}
-
-/* name -- true/nil error */
-static int ex_unsetenv(lua_State *L)
-{
-	const char *nam = luaL_checkstring(L, 1);
-	if (!SetEnvironmentVariable(nam, 0))
-		return push_error(L);
+		return windows_pushlasterror(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -86,7 +55,7 @@ static int ex_environ(lua_State *L)
 {
 	const char *nam, *val, *end;
 	const char *envs = GetEnvironmentStrings();
-	if (!envs) return push_error(L);
+	if (!envs) return windows_pushlasterror(L);
 	lua_newtable(L);
 	for (nam = envs; *nam; nam = end + 1) {
 		end = strchr(val = strchr(nam, '=') + 1, '\0');
@@ -112,7 +81,7 @@ static int ex_chdir(lua_State *L)
 {
 	const char *pathname = luaL_checkstring(L, 1);
 	if (!SetCurrentDirectory(pathname))
-		return push_error(L);
+		return windows_pushlasterror(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -122,7 +91,7 @@ static int ex_mkdir(lua_State *L)
 {
 	const char *pathname = luaL_checkstring(L, 1);
 	if (!CreateDirectory(pathname, 0))
-		return push_error(L);
+		return windows_pushlasterror(L);
 	lua_pushboolean(L, 1);
 	return 1;
 }
@@ -132,26 +101,23 @@ static int ex_currentdir(lua_State *L)
 {
 	char pathname[MAX_PATH + 1];
 	size_t len = GetCurrentDirectory(sizeof pathname, pathname);
-	if (len == 0) return push_error(L);
+	if (len == 0) return windows_pushlasterror(L);
 	lua_pushlstring(L, pathname, len);
 	return 1;
 }
 
-/* -- pathname/nil error */
+/* pathname -- true/nil error */
 static int ex_remove(lua_State *L)
 {
-       const char *pathname = luaL_checkstring(L, 1);
-       DWORD attr = GetFileAttributes(pathname);
-       if (attr & FILE_ATTRIBUTE_DIRECTORY) {
-               if (!RemoveDirectory(pathname))
-                       return push_error(L);
-       }
-       else {
-               if (!DeleteFile(pathname))
-                       return push_error(L);
-       }
-       lua_pushboolean(L, 1);
-       return 1;
+	const char *pathname = luaL_checkstring(L, 1);
+	DWORD attr = GetFileAttributes(pathname);
+	if (attr == (DWORD)-1
+	    || (attr & FILE_ATTRIBUTE_DIRECTORY
+	        ? !RemoveDirectory(pathname)
+	        : !DeleteFile(pathname)))
+		return windows_pushlasterror(L);
+	lua_pushboolean(L, 1);
+	return 1;
 }
 
 FILE *check_file(lua_State *L, int idx, const char *argname)
@@ -171,7 +137,7 @@ FILE *check_file(lua_State *L, int idx, const char *argname)
 	return *pf;
 }
 
-static uint64_t get_size(const char *name)
+static uint64_t get_file_size(const char *name)
 {
 	HANDLE h = CreateFile(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
 	DWORD lo, hi;
@@ -189,55 +155,60 @@ static uint64_t get_size(const char *name)
 	return size;
 }
 
-/* pathname/file -- entry */
+#define new_dirent(L) lua_newtable(L)
+
+/* pathname/file [entry] -- entry */
 static int ex_dirent(lua_State *L)
 {
 	int isdir;
 	lua_Number size;
+	DWORD attr;
 	switch (lua_type(L, 1)) {
 	default: return luaL_typerror(L, 1, "file or pathname");
 	case LUA_TSTRING: {
 		const char *name = lua_tostring(L, 1);
-		DWORD attr = GetFileAttributes(name);
+		attr = GetFileAttributes(name);
 		if (attr == (DWORD)-1)
-			return push_error(L);
+			return windows_pushlasterror(L);
 		isdir = attr & FILE_ATTRIBUTE_DIRECTORY;
 		if (isdir)
 			size = 0;
 		else
-			size = get_size(name);
+			size = get_file_size(name);
 		} break;
 	case LUA_TUSERDATA: {
 		FILE *f = check_file(L, 1, NULL);
 		uint64_t lsize;
 		BY_HANDLE_FILE_INFORMATION info;
-		if (!GetFileInformationByHandle(get_handle(f), &info))
-			return push_error(L);
-		isdir = info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY;
+		if (!GetFileInformationByHandle(file_handle(f), &info))
+			return windows_pushlasterror(L);
+		attr = info.dwFileAttributes;
+		isdir = attr & FILE_ATTRIBUTE_DIRECTORY;
 		lsize = info.nFileSizeHigh; lsize <<= 32; lsize += info.nFileSizeLow;
 		size = lsize;
 		} break;
 	}
 	if (lua_type(L, 2) != LUA_TTABLE) {
-		lua_newtable(L);
-		lua_replace(L, 2);
+		lua_settop(L, 1);
+		new_dirent(L);
 	}
-	lua_pushliteral(L, "type");
+	else {
+		lua_settop(L, 2);
+	}
 	if (isdir)
 		lua_pushliteral(L, "directory");
 	else
 		lua_pushliteral(L, "file");
-	lua_settable(L, 2);
-	lua_pushliteral(L, "size");
+	lua_setfield(L, 2, "type");
 	lua_pushnumber(L, size);
-	lua_settable(L, 2);
-	lua_settop(L, 2);
+	lua_setfield(L, 2, "size");
 	return 1;
 }
 
 #define DIR_HANDLE "WIN32_FIND_DATA"
 struct diriter {
 	HANDLE hf;
+	int first;
 	WIN32_FIND_DATA fd;
 };
 
@@ -271,10 +242,28 @@ static int diriter_close(lua_State *L)
 	if (pi->hf != INVALID_HANDLE_VALUE) {
 		FindClose(pi->hf);
 		pi->hf = INVALID_HANDLE_VALUE;
-		lua_pushnil(L);
-		diriter_setpathname(L, 1);
 	}
+	lua_pushnil(L);
+	diriter_setpathname(L, 1);
 	return 0;
+}
+
+static int isdotfile(const char *filename)
+{
+	return filename[0] == '.' &&
+		(filename[1] == '\0' || (filename[1] == '.' && filename[2] == '\0'));
+}
+
+static int nextfile(struct diriter *pi)
+{
+	if (!pi->first || isdotfile(pi->fd.cFileName))
+		do if (!FindNextFile(pi->hf, &pi->fd)) {
+			FindClose(pi->hf);
+			pi->hf = INVALID_HANDLE_VALUE;
+			return 0;
+		} while (isdotfile(pi->fd.cFileName));
+	pi->first = 0;
+	return 1;
 }
 
 /* pathname -- iter state nil */
@@ -294,7 +283,8 @@ static int ex_dir(lua_State *L)
 		pi = lua_newuserdata(L, sizeof *pi);/* pathname ... pat iter state */
 		pi->hf = FindFirstFile(pathname, &pi->fd);
 		if (pi->hf == INVALID_HANDLE_VALUE)
-			return push_error(L);
+			return windows_pushlasterror(L);
+		pi->first = 1;
 		luaL_getmetatable(L, DIR_HANDLE);   /* pathname ... pat iter state M */
 		lua_setmetatable(L, -2);            /* pathname ... pat iter state */
 		lua_pushvalue(L, 1);                /* pathname ... pat iter state pathname */
@@ -302,19 +292,13 @@ static int ex_dir(lua_State *L)
 		return 2;
 	case LUA_TUSERDATA:
 		pi = luaL_checkudata(L, 1, DIR_HANDLE);
-		if (pi->hf == INVALID_HANDLE_VALUE)
-			return 0;
-		lua_newtable(L);                    /* diriter ... entry */
+		if (!nextfile(pi)) return 0;
+		new_dirent(L);                      /* diriter ... entry */
 		diriter_getpathname(L, 1);          /* diriter ... entry dirpath */
 		lua_pushstring(L, pi->fd.cFileName);/* diriter ... entry dirpath name */
-		lua_pushliteral(L, "name");         /* diriter ... entry dirpath name "name" */
-		lua_pushvalue(L, -2);               /* diriter ... entry dirpath name "name" name */
-		lua_settable(L, -5);                /* diriter ... entry dirpath name */
+		lua_pushvalue(L, -1);               /* diriter ... entry dirpath name name */
+		lua_setfield(L, -4, "name");        /* diriter ... entry dirpath name */
 		lua_concat(L, 2);                   /* diriter ... entry fullpath */
-		if (!FindNextFile(pi->hf, &pi->fd)) {
-			FindClose(pi->hf);
-			pi->hf = INVALID_HANDLE_VALUE;
-		}
 		lua_replace(L, 1);                  /* fullpath ... entry */
 		lua_replace(L, 2);                  /* fullpath entry ... */
 		return ex_dirent(L);
@@ -325,12 +309,11 @@ static int ex_dir(lua_State *L)
 
 static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long length)
 {
-	HANDLE h = get_handle(f);
+	HANDLE h = file_handle(f);
 	DWORD flags;
-	LARGE_INTEGER len = {0,0};
+	ULARGE_INTEGER len = {0};
 	OVERLAPPED ov = {0};
 	BOOL ret;
-	ov.hEvent = INVALID_HANDLE_VALUE;
 	if (length) len.LowPart = length;
 	else len.LowPart = GetFileSize(h, &len.HighPart);
 	ov.Offset = offset;
@@ -343,12 +326,13 @@ static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long 
 	ret = flags ? LockFileEx(h, flags, 0, len.LowPart, len.HighPart, &ov)
 		: UnlockFileEx(h, 0, len.LowPart, len.HighPart, &ov);
 	if (!ret)
-		return push_error(L);
-	lua_pushboolean(L, 1);
+		return windows_pushlasterror(L);
+	/* return the file */
+	lua_settop(L, 1);
 	return 1;
 }
 
-/* file mode [offset [length]] -- true/nil error */
+/* file mode [offset [length]] -- file/nil error */
 static int ex_lock(lua_State *L)
 {
 	FILE *f = check_file(L, 1, NULL);
@@ -358,7 +342,7 @@ static int ex_lock(lua_State *L)
 	return file_lock(L, f, mode, offset, length);
 }
 
-/* file [offset [length]] -- true/nil error */
+/* file [offset [length]] -- file/nil error */
 static int ex_unlock(lua_State *L)
 {
 	lua_pushliteral(L, "u");
@@ -379,19 +363,21 @@ static int make_pipe(FILE **i, FILE **o)
 	return 1;
 }
 
+#define new_file(L) lua_newuserdata(L, sizeof(FILE *))
+
 /* -- in out/nil error */
 static int ex_pipe(lua_State *L)
 {
 	FILE *i, *o, **pf;
 	if (!make_pipe(&i, &o))
-		return push_error(L);
-	luaL_getmetatable(L, LUA_FILEHANDLE);       /* M */
-	*(pf = lua_newuserdata(L, sizeof *pf)) = i; /* M i */
-	lua_pushvalue(L, -2);                       /* M i M */
-	lua_setmetatable(L, -2);                    /* M i */
-	*(pf = lua_newuserdata(L, sizeof *pf)) = o; /* M i o */
-	lua_pushvalue(L, -3);                       /* M i o M */
-	lua_setmetatable(L, -2);                    /* M i o */
+		return windows_pushlasterror(L);
+	luaL_getmetatable(L, LUA_FILEHANDLE);   /* M */
+	*(pf = new_file(L)) = i;                /* M i */
+	lua_pushvalue(L, -2);                   /* M i M */
+	lua_setmetatable(L, -2);                /* M i */
+	*(pf = new_file(L)) = o;                /* M i o */
+	lua_pushvalue(L, -3);                   /* M i o M */
+	lua_setmetatable(L, -2);                /* M i o */
 	return 2;
 }
 
@@ -404,8 +390,8 @@ static void get_redirect(lua_State *L, int idx, const char *stdname, struct spaw
 	lua_pop(L, 1);
 }
 
-/* filename [args-opts] -- true/nil error */
-/* args-opts -- true/nil error */
+/* filename [args-opts] -- proc/nil error */
+/* args-opts -- proc/nil error */
 static int ex_spawn(lua_State *L)
 {
 	struct spawn_params *params;
@@ -482,50 +468,9 @@ static int ex_spawn(lua_State *L)
 	return spawn_param_execute(params);         /* proc/nil error */
 }
 
-
-static const luaL_reg ex_iolib[] = {
-	{"pipe",       ex_pipe},
-	{0,0}
-};
-static const luaL_reg ex_iofile_methods[] = {
-	{"lock",       ex_lock},
-	{"unlock",     ex_unlock},
-	{0,0}
-};
-static const luaL_reg ex_oslib[] = {
-	{"getenv",     ex_getenv},
-	{"setenv",     ex_setenv},
-	{"unsetenv",   ex_unsetenv},
-	{"environ",    ex_environ},
-
-	{"sleep",      ex_sleep},
-
-	{"chdir",      ex_chdir},
-	{"mkdir",      ex_mkdir},
-	{"currentdir", ex_currentdir},
-	{"remove",     ex_remove},
-
-	{"dir",        ex_dir},
-	{"dirent",     ex_dirent},
-
-	{"spawn",      ex_spawn},
-	{0,0}
-};
-static const luaL_reg ex_diriter_methods[] = {
-	{"__gc",       diriter_close},
-/*	{"__tostring", diriter_tostring}, */
-	{0,0}
-};
-static const luaL_reg ex_process_methods[] = {
-	{"__tostring", process_tostring},
-	{"wait",       process_wait},
-	{0,0}
-};
-
 /* copy the fields given in 'l' from one table to another; insert missing fields */
 static void copy_fields(lua_State *L, const luaL_reg *l, int from, int to)
 {
-	from = absindex(L, from);
 	to = absindex(L, to);
 	for (; l->name; l++) {
 		lua_getfield(L, from, l->name);
@@ -539,6 +484,39 @@ static void copy_fields(lua_State *L, const luaL_reg *l, int from, int to)
 
 int luaopen_ex(lua_State *L)
 {
+	const luaL_reg ex_iolib[] = {
+		{"pipe",       ex_pipe},
+		{0,0} };
+	const luaL_reg ex_iofile_methods[] = {
+		{"lock",       ex_lock},
+		{"unlock",     ex_unlock},
+		{0,0} };
+	const luaL_reg ex_oslib[] = {
+		{"getenv",     ex_getenv},
+		{"setenv",     ex_setenv},
+		{"environ",    ex_environ},
+
+		{"sleep",      ex_sleep},
+
+		{"chdir",      ex_chdir},
+		{"mkdir",      ex_mkdir},
+		{"currentdir", ex_currentdir},
+		{"remove",     ex_remove},
+
+		{"dir",        ex_dir},
+		{"dirent",     ex_dirent},
+
+		{"spawn",      ex_spawn},
+		{0,0} };
+	const luaL_reg ex_diriter_methods[] = {
+		{"__gc",       diriter_close},
+	/*	{"__tostring", diriter_tostring}, */
+		{0,0} };
+	const luaL_reg ex_process_methods[] = {
+		{"__tostring", process_tostring},
+		{"wait",       process_wait},
+		{0,0} };
+
 	/* Make all functions available via ex. namespace */
 	luaL_register(L, "ex", ex_iolib);           /* . ex */
 	luaL_register(L, 0, ex_oslib);
