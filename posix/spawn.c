@@ -1,5 +1,5 @@
-#include <lua.h>
-#include <lauxlib.h>
+#include "lua.h"
+#include "lauxlib.h"
 
 #include <unistd.h>
 #include <sys/wait.h>
@@ -93,7 +93,7 @@ void spawn_param_env(struct spawn_params *p)
 	make_vector(p->L);                     /* ... arr */
 }
 
-void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
+void spawn_param_redirect(struct spawn_params *p, const char *stdname, int fd)
 {
 	int d;
 	switch (stdname[3]) {
@@ -101,7 +101,7 @@ void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
 	case 'o': d = STDOUT_FILENO; break;
 	case 'e': d = STDERR_FILENO; break;
 	}
-	posix_spawn_file_actions_adddup2(&p->redirect, fileno(f), d);
+	posix_spawn_file_actions_adddup2(&p->redirect, fd, d);
 }
 
 struct process {
