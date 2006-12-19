@@ -126,12 +126,13 @@ static FILE *check_file(lua_State *L, int idx, const char *argname)
 	return *pf;
 }
 
+#define new_dirent(L) lua_newtable(L)
+
 /* pathname/file -- entry */
 static int ex_dirent(lua_State *L)
 {
 	struct stat st;
 	int isdir;
-	lua_Number size;
 	switch (lua_type(L, 1)) {
 	default: return luaL_typerror(L, 1, "file or pathname");
 	case LUA_TSTRING: {
@@ -147,18 +148,16 @@ static int ex_dirent(lua_State *L)
 	}
 	isdir = S_ISDIR(st.st_mode);
 	if (lua_type(L, 2) != LUA_TTABLE) {
-		lua_newtable(L);
+		new_dirent(L);
 		lua_replace(L, 2);
 	}
-	lua_pushliteral(L, "type");
 	if (isdir)
 		lua_pushliteral(L, "directory");
 	else
 		lua_pushliteral(L, "file");
-	lua_settable(L, 2);
-	lua_pushliteral(L, "size");
-	lua_pushnumber(L, size);
-	lua_settable(L, 2);
+	lua_setfield(L, 2, "type");
+	lua_pushnumber(L, st.st_size);
+	lua_setfield(L, 2, "size");
 	lua_settop(L, 2);
 	return 1;
 }
@@ -232,12 +231,11 @@ static int ex_dir(lua_State *L)
 		do d = readdir(*pd);
 		while (d && isdotfile(d->d_name));
 		if (!d) return push_error(L);
-		lua_newtable(L);                    /* diriter ... entry */
+		new_dirent(L);                      /* diriter ... entry */
 		diriter_getpathname(L, 1);          /* diriter ... entry dirpath */
 		lua_pushstring(L, d->d_name);       /* diriter ... entry dirpath name */
-		lua_pushliteral(L, "name");         /* diriter ... entry dirpath name "name" */
-		lua_pushvalue(L, -2);               /* diriter ... entry dirpath name "name" name */
-		lua_settable(L, -5);                /* diriter ... entry dirpath name */
+		lua_pushvalue(L, -1);               /* diriter ... entry dirpath name name */
+		lua_setfield(L, -4, "name");        /* diriter ... entry dirpath name */
 		lua_concat(L, 2);                   /* diriter ... entry fullpath */
 		lua_replace(L, 1);                  /* fullpath ... entry */
 		lua_replace(L, 2);                  /* fullpath entry ... */
