@@ -8,6 +8,12 @@
 
 #include "posix_spawn.h"
 
+#ifndef OPEN_MAX
+#define OPEN_MAX sysconf(_SC_OPEN_MAX)
+#endif
+
+MISSING_ENVIRON_DECL;
+
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *act)
 {
 	act->dups[0] = act->dups[1] = act->dups[2] = -1;
@@ -16,10 +22,12 @@ int posix_spawn_file_actions_init(posix_spawn_file_actions_t *act)
 
 int posix_spawn_file_actions_adddup2(posix_spawn_file_actions_t *act, int d, int n)
 {
+	/* good faith effort to determine validity of descriptors */
 	if (d < 0 || OPEN_MAX < d || n < 0 || OPEN_MAX < n) {
 		errno = EBADF;
 		return -1;
 	}
+	/* we only support duplication to 0,1,2 */
 	if (2 < n) {
 		errno = EINVAL;
 		return -1;

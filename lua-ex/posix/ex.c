@@ -3,6 +3,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <string.h>
+#include <unistd.h> /* environ */
 
 #include "lua.h"
 #include "lualib.h"
@@ -14,6 +15,8 @@
 #include <sys/stat.h>
 
 #include "spawn.h"
+
+MISSING_ENVIRON_DECL;
 
 
 #define absindex(L,i) ((i)>0?(i):lua_gettop(L)+(i)+1)
@@ -384,12 +387,13 @@ static int ex_spawn(lua_State *L)
 		}
 		lua_getfield(L, 2, "env");              /* cmd opts ... envtab */
 		switch (lua_type(L, -1)) {
-		default: return luaL_error(L, "bad env option (table expected, got %s)",
-			luaL_typename(L, -1));
 		case LUA_TNIL:
+			break;
 		case LUA_TTABLE:
 			spawn_param_env(params);            /* cmd opts ... */
 			break;
+		default:
+			return luaL_error(L, "bad env option (table expected, got %s)", luaL_typename(L, -1));
 		}
 		get_redirect(L, 2, "stdin", params);    /* cmd opts ... */
 		get_redirect(L, 2, "stdout", params);   /* cmd opts ... */
