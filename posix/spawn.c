@@ -10,6 +10,7 @@
 #endif
 
 #include "spawn.h"
+MISSING_ENVIRON_DECL;
 
 struct spawn_params {
 	lua_State *L;
@@ -66,15 +67,11 @@ void spawn_param_args(struct spawn_params *p)
 	p->argv = argv;
 }
 
-/* ... envtab/nil */
+/* ... envtab */
 void spawn_param_env(struct spawn_params *p)
 {
 	size_t i = 0;
 	luaL_Buffer estr;
-	if (lua_isnil(p->L, -1)) {
-		p->envp = (const char **)environ;
-		return;
-	}
 	luaL_buffinit(p->L, &estr);
 	lua_newtable(p->L);                    /* ... envtab arr */
 	lua_pushnil(p->L);                     /* ... envtab arr nil */
