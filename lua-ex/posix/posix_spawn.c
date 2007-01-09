@@ -3,6 +3,7 @@
 #include <errno.h>
 
 #include <unistd.h>
+ENVIRON_DECL
 #include <limits.h>
 #include <sys/types.h>
 
@@ -12,7 +13,6 @@
 #define OPEN_MAX sysconf(_SC_OPEN_MAX)
 #endif
 
-MISSING_ENVIRON_DECL;
 
 int posix_spawn_file_actions_init(posix_spawn_file_actions_t *act)
 {

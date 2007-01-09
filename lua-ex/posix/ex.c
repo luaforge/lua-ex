@@ -3,23 +3,21 @@
 #include <ctype.h>
 #include <errno.h>
 #include <string.h>
-#include <unistd.h> /* environ */
+
+#include <unistd.h>
+ENVIRON_DECL
+#include <dirent.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 
 #include "lua.h"
 #include "lualib.h"
 #include "lauxlib.h"
 
-#include <unistd.h>
-#include <dirent.h>
-#include <fcntl.h>
-#include <sys/stat.h>
+#define absindex(L,i) ((i)>0?(i):lua_gettop(L)+(i)+1)
 
 #include "spawn.h"
 
-MISSING_ENVIRON_DECL;
-
-
-#define absindex(L,i) ((i)>0?(i):lua_gettop(L)+(i)+1)
 
 /* -- nil error */
 extern int push_error(lua_State *L)
@@ -41,8 +39,8 @@ static int ex_getenv(lua_State *L)
 	return 1;
 }
 
-/* name value -- true/nil error *
- * name -- true/nil error */
+/* name value -- true/nil error
+ * name nil -- true/nil error */
 static int ex_setenv(lua_State *L)
 {
 	const char *nam = luaL_checkstring(L, 1);
@@ -126,13 +124,23 @@ static FILE *check_file(lua_State *L, int idx, const char *argname)
 	return *pf;
 }
 
+static FILE **new_file(lua_State *L, int fd, const char *mode)
+{
+	FILE **pf = lua_newuserdata(L, sizeof *pf);
+	*pf = 0;
+	luaL_getmetatable(L, LUA_FILEHANDLE);
+	lua_setmetatable(L, -2);
+	*pf = fdopen(fd, mode);
+	return pf;
+}
+
+
 #define new_dirent(L) lua_newtable(L)
 
-/* pathname/file -- entry */
+/* pathname/file [entry] -- entry */
 static int ex_dirent(lua_State *L)
 {
 	struct stat st;
-	int isdir;
 	switch (lua_type(L, 1)) {
 	default: return luaL_typerror(L, 1, "file or pathname");
 	case LUA_TSTRING: {
@@ -146,19 +154,20 @@ static int ex_dirent(lua_State *L)
 			return push_error(L);
 		} break;
 	}
-	isdir = S_ISDIR(st.st_mode);
 	if (lua_type(L, 2) != LUA_TTABLE) {
+		lua_settop(L, 1);
 		new_dirent(L);
-		lua_replace(L, 2);
 	}
-	if (isdir)
+	else {
+		lua_settop(L, 2);
+	}
+	if (S_ISDIR(st.st_mode))
 		lua_pushliteral(L, "directory");
 	else
 		lua_pushliteral(L, "file");
 	lua_setfield(L, 2, "type");
 	lua_pushnumber(L, st.st_size);
 	lua_setfield(L, 2, "size");
-	lua_settop(L, 2);
 	return 1;
 }
 
@@ -202,8 +211,8 @@ static int diriter_close(lua_State *L)
 
 static int isdotfile(const char *name)
 {
-	return name[0] && (name[1] == 0
-		|| (name[1] == '.' && name[2] == 0));
+	return name[0] == '.' && (name[1] == '\0'
+		|| (name[1] == '.' && name[2] == '\0'));
 }
 
 /* pathname -- iter state nil */
@@ -259,11 +268,11 @@ static int file_lock(lua_State *L, FILE *f, const char *mode, long offset, long 
 	k.l_len = length;
 	if (-1 == fcntl(fileno(f), F_SETLK, &k))
 		return push_error(L);
-	lua_pushboolean(L, 1);
+	lua_settop(L, 1);
 	return 1;
 }
 
-/* file mode [offset [length]] -- true/nil error */
+/* file mode [offset [length]] -- file/nil error */
 static int ex_lock(lua_State *L)
 {
 	FILE *f = check_file(L, 1, NULL);
@@ -273,7 +282,7 @@ static int ex_lock(lua_State *L)
 	return file_lock(L, f, mode, offset, length);
 }
 
-/* file [offset [length]] -- true/nil error */
+/* file [offset [length]] -- file/nil error */
 static int ex_unlock(lua_State *L)
 {
 	lua_pushliteral(L, "u");
@@ -290,22 +299,12 @@ static int closeonexec(int d)
 	return fl;
 }
 
-static int new_file(lua_State *L, int fd, const char *mode)
-{
-	FILE **pf = lua_newuserdata(L, sizeof *pf);
-	*pf = 0;
-	luaL_getmetatable(L, LUA_FILEHANDLE);
-	lua_setmetatable(L, -2);
-	*pf = fdopen(fd, mode);
-	return 1;
-}
-
 /* -- in out/nil error */
 static int ex_pipe(lua_State *L)
 {
 	int fd[2];
 	if (-1 == pipe(fd))
-		return 0;
+		return push_error(L);
 	closeonexec(fd[0]);
 	closeonexec(fd[1]);
 	new_file(L, fd[0], "r");
@@ -322,8 +321,8 @@ static void get_redirect(lua_State *L, int idx, const char *stdname, struct spaw
 	lua_pop(L, 1);
 }
 
-/* filename [args-opts] -- true/nil error */
-/* args-opts -- true/nil error */
+/* filename [args-opts] -- proc/nil error */
+/* args-opts -- proc/nil error */
 static int ex_spawn(lua_State *L)
 {
 	struct spawn_params *params;
@@ -385,13 +384,13 @@ static int ex_spawn(lua_State *L)
 		}
 		lua_getfield(L, 2, "env");              /* cmd opts ... envtab */
 		switch (lua_type(L, -1)) {
+		default: return luaL_error(L, "bad env option (table expected, got %s)",
+			luaL_typename(L, -1));
 		case LUA_TNIL:
 			break;
 		case LUA_TTABLE:
 			spawn_param_env(params);            /* cmd opts ... */
 			break;
-		default:
-			return luaL_error(L, "bad env option (table expected, got %s)", luaL_typename(L, -1));
 		}
 		get_redirect(L, 2, "stdin", params);    /* cmd opts ... */
 		get_redirect(L, 2, "stdout", params);   /* cmd opts ... */
@@ -405,9 +404,7 @@ static int ex_spawn(lua_State *L)
 /* copy the fields given in 'l' from one table to another; insert missing fields */
 static void copy_fields(lua_State *L, const luaL_reg *l, int from, int to)
 {
-	from = absindex(L, from);
-	to = absindex(L, to);
-	for (; l->name; l++) {
+	for (to = absindex(L, to); l->name; l++) {
 		lua_getfield(L, from, l->name);
 		if (lua_isnil(L, -1)) {
 			lua_pop(L, 1);
@@ -467,6 +464,7 @@ int luaopen_ex(lua_State *L)
 	lua_getglobal(L, "io");                     /* ex . io */
 	if (lua_isnil(L, -1)) return luaL_error(L, "io not loaded");
 	copy_fields(L, ex_iolib, 1, -1);            /* ex . io */
+	copy_fields(L, ex_iofile_methods, 1, -1);   /* ex . io */
 	lua_getfield(L, 1, "pipe");                 /* ex . io ex_pipe */
 	lua_getfield(L, -2, "stderr");              /* ex . io ex_pipe io_stderr */
 	lua_getfenv(L, -1);                         /* ex . io ex_pipe io_stderr E */

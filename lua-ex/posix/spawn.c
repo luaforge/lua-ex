@@ -1,7 +1,5 @@
-#include "lua.h"
-#include "lauxlib.h"
-
 #include <unistd.h>
+ENVIRON_DECL
 #include <sys/wait.h>
 #if MISSING_POSIX_SPAWN
 #include "posix_spawn.h"
@@ -9,8 +7,10 @@
 #include <spawn.h>
 #endif
 
+#include "lua.h"
+#include "lauxlib.h"
+
 #include "spawn.h"
-MISSING_ENVIRON_DECL;
 
 struct spawn_params {
 	lua_State *L;
