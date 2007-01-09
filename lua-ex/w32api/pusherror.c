@@ -1,3 +1,8 @@
+/*
+ * "ex" API implementation
+ * http://lua-users.org/wiki/ExtensionProposal
+ * Copyright 2007 Mark Edgar < medgar at student gc maricopa edu >
+ */
 #include <stdio.h> /* sprintf() */
 #include <ctype.h>
 #define WIN32_LEAN_AND_MEAN 1

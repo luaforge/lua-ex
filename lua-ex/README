@@ -1,3 +1,7 @@
+"ex" API implementation
+http://lua-users.org/wiki/ExtensionProposal
+Copyright 2007 Mark Edgar < medgar at student gc maricopa edu >
+
 -- Environment
 os.getenv(name) -- get environment variable
 os.setenv(name, value) -- set/unset environment variable
@@ -7,17 +11,18 @@ os.environ() -- returns a copy of the environment
 os.sleep(seconds) -- sleep for (floating) seconds
 
 -- File system
-os.chdir(pathname)
 cwd = os.currentdir()
+os.chdir(pathname)
 os.mkdir(pathname)
+os.remove(pathname)
 
-for stat in os.dir(pathname) do ; end
-stat = os.stat(pathname)
+for entry in os.dir(pathname) do ; end
+entry = os.dirent(pathname)
 --[[
-	stat is a table, containing at least the following keys:
-	name: the filename
-	type: "file" or "directory" or another implementation-defined string
-	size: the file size in bytes
+  entry is a table, containing at least the following keys:
+  name: the filename
+  type: "file" or "directory" or another implementation-defined string
+  size: the file size in bytes
 --]]
 
 -- Locking and pipes
