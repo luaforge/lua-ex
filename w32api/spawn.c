@@ -1,10 +1,9 @@
 #include <stdlib.h>
-
-#include <lua.h>
-#include <lauxlib.h>
-
 #include <windows.h>
 #include <io.h>
+
+#include "lua.h"
+#include "lauxlib.h"
 
 #include "spawn.h"
 #include "pusherror.h"
@@ -81,11 +80,6 @@ void spawn_param_env(struct spawn_params *p)
 {
 	lua_State *L = p->L;
 	luaL_Buffer env;
-	if (lua_isnil(L, -1)) {
-		p->environment = 0;
-		lua_pop(L, 1);
-		return;
-	}
 	/* convert env table to zstring list */
 	/* {nam1=val1,nam2=val2} => "nam1=val1\0nam2=val2\0\0" */
 	luaL_buffinit(L, &env);
@@ -108,9 +102,8 @@ void spawn_param_env(struct spawn_params *p)
 	p->environment = lua_tostring(L, -1);
 }
 
-void spawn_param_redirect(struct spawn_params *p, const char *stdname, FILE *f)
+void spawn_param_redirect(struct spawn_params *p, const char *stdname, HANDLE h)
 {
-	HANDLE h = file_handle(f);
 	SetHandleInformation(h, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT);
 	if (!(p->si.dwFlags & STARTF_USESTDHANDLES)) {
 		p->si.hStdInput  = GetStdHandle(STD_INPUT_HANDLE);

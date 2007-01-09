@@ -1,10 +1,10 @@
 -- Environment
-os.setenv(name, value)
-os.unsetenv(name)
+os.getenv(name) -- get environment variable
+os.setenv(name, value) -- set/unset environment variable
 os.environ() -- returns a copy of the environment
 
 -- Miscellaneous
-os.sleep(seconds)
+os.sleep(seconds) -- sleep for (floating) seconds
 
 -- File system
 os.chdir(pathname)

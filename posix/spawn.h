@@ -2,7 +2,7 @@
 #define SPAWN_H
 
 #include <stdio.h>
-#include <lua.h>
+#include "lua.h"
 
 #define PROCESS_HANDLE "process"
 struct process;
