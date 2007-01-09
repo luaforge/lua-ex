@@ -1,3 +1,8 @@
+/*
+ * "ex" API implementation
+ * http://lua-users.org/wiki/ExtensionProposal
+ * Copyright 2007 Mark Edgar < medgar at student gc maricopa edu >
+ */
 #include <sched.h>
 #include <signal.h>
 #include <sys/types.h>
