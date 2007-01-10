@@ -7,9 +7,6 @@ os.getenv(name) -- get environment variable
 os.setenv(name, value) -- set/unset environment variable
 os.environ() -- returns a copy of the environment
 
--- Miscellaneous
-os.sleep(seconds) -- sleep for (floating) seconds
-
 -- File system
 cwd = os.currentdir()
 os.chdir(pathname)
@@ -32,5 +29,7 @@ file:unlock(start, length) -- start and length are optional
 in, out = io.pipe()
 
 -- Process control
+os.sleep(seconds) -- sleep for (floating-point) seconds
+os.sleep(interval, unit) -- sleep for interval/unit seconds
 pid = os.spawn(filename, {args={}, env={}, stdin=file, stdout=file, stderr=file})
 exitcode = pid:wait(pid)
