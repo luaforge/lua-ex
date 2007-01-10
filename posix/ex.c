@@ -14,6 +14,7 @@ ENVIRON_DECL
 #include <dirent.h>
 #include <fcntl.h>
 #include <sys/stat.h>
+#include <limits.h>
 
 #include "lua.h"
 #include "lualib.h"
@@ -22,7 +23,6 @@ ENVIRON_DECL
 #define absindex(L,i) ((i)>0?(i):lua_gettop(L)+(i)+1)
 
 #include "spawn.h"
-
 
 /* -- nil error */
 extern int push_error(lua_State *L)
@@ -72,14 +72,15 @@ static int ex_environ(lua_State *L)
 }
 
 
-/* seconds -- */
-static int ex_sleep(lua_State *L)
+/* -- pathname/nil error */
+static int ex_currentdir(lua_State *L)
 {
-	lua_Number seconds = luaL_checknumber(L, 1);
-	usleep(1e6 * seconds);
-	return 0;
+	char pathname[PATH_MAX + 1];
+	if (!getcwd(pathname, sizeof pathname))
+		return push_error(L);
+	lua_pushstring(L, pathname);
+	return 1;
 }
-
 
 /* pathname -- true/nil error */
 static int ex_chdir(lua_State *L)
@@ -101,15 +102,18 @@ static int ex_mkdir(lua_State *L)
 	return 1;
 }
 
-/* -- pathname/nil error */
-static int ex_currentdir(lua_State *L)
+/* os.remove provides the correct semantics on POSIX systems */
+#if 0
+/* pathname -- true/nil error */
+static int ex_remove(lua_State *L)
 {
-	char pathname[PATH_MAX + 1];
-	if (!getcwd(pathname, sizeof pathname))
+	const char *pathname = luaL_checkstring(L, 1);
+	if (-1 == remove(pathname))
 		return push_error(L);
-	lua_pushstring(L, pathname);
+	lua_pushboolean(L, 1);
 	return 1;
 }
+#endif
 
 
 static FILE *check_file(lua_State *L, int idx, const char *argname)
@@ -318,6 +322,17 @@ static int ex_pipe(lua_State *L)
 }
 
 
+/* seconds --
+ * interval units -- */
+static int ex_sleep(lua_State *L)
+{
+	lua_Number interval = luaL_checknumber(L, 1);
+	lua_Number units = luaL_optnumber(L, 2, 1);
+	usleep(1e6 * interval / units);
+	return 0;
+}
+
+
 static void get_redirect(lua_State *L, int idx, const char *stdname, struct spawn_params *p)
 {
 	lua_getfield(L, idx, stdname);
@@ -406,8 +421,9 @@ static int ex_spawn(lua_State *L)
 }
 
 
-/* copy the fields given in 'l' from one table to another; insert missing fields */
-static void copy_fields(lua_State *L, const luaL_reg *l, int from, int to)
+/* register functions from 'lib' in table 'to' by copying existing
+ * closures from table 'from' or by creating new closures */
+static void copyfields(lua_State *L, const luaL_reg *l, int from, int to)
 {
 	for (to = absindex(L, to); l->name; l++) {
 		lua_getfield(L, from, l->name);
@@ -423,8 +439,7 @@ int luaopen_ex(lua_State *L)
 {
 	const luaL_reg ex_iolib[] = {
 		{"pipe",       ex_pipe},
-		{0,0} };
-	const luaL_reg ex_iofile_methods[] = {
+#define ex_iofile_methods (ex_iolib + 1)
 		{"lock",       ex_lock},
 		{"unlock",     ex_unlock},
 		{0,0} };
@@ -433,62 +448,67 @@ int luaopen_ex(lua_State *L)
 		{"setenv",     ex_setenv},
 		{"environ",    ex_environ},
 
-		{"sleep",      ex_sleep},
-
+		{"currentdir", ex_currentdir},
 		{"chdir",      ex_chdir},
 		{"mkdir",      ex_mkdir},
-		{"currentdir", ex_currentdir},
+#if 0
+		{"remove",     ex_remove},
+#endif
 
 		{"dir",        ex_dir},
 		{"dirent",     ex_dirent},
 
+		{"sleep",      ex_sleep},
 		{"spawn",      ex_spawn},
 		{0,0} };
 	const luaL_reg ex_diriter_methods[] = {
 		{"__gc",       diriter_close},
-	/*	{"__tostring", diriter_tostring}, */
 		{0,0} };
 	const luaL_reg ex_process_methods[] = {
 		{"__tostring", process_tostring},
+#define ex_process_functions (ex_process_methods + 1)
 		{"wait",       process_wait},
 		{0,0} };
 
-	/* Make all functions available via ex. namespace */
-	luaL_register(L, "ex", ex_iolib);           /* . ex */
-	luaL_register(L, 0, ex_oslib);
-	luaL_register(L, 0, ex_iofile_methods);
-	luaL_register(L, 0, ex_process_methods + 1); /* XXX don't insert __tostring */
-	lua_replace(L, 1);                          /* ex . */
-
-	/* extend the os table */
-	lua_getglobal(L, "os");                     /* ex . os */
-	if (lua_isnil(L, -1)) return luaL_error(L, "os not loaded");
-	copy_fields(L, ex_oslib, 1, -1);            /* ex . os */
-
-	/* extend the io table */
-	lua_getglobal(L, "io");                     /* ex . io */
-	if (lua_isnil(L, -1)) return luaL_error(L, "io not loaded");
-	copy_fields(L, ex_iolib, 1, -1);            /* ex . io */
-	copy_fields(L, ex_iofile_methods, 1, -1);   /* ex . io */
-	lua_getfield(L, 1, "pipe");                 /* ex . io ex_pipe */
-	lua_getfield(L, -2, "stderr");              /* ex . io ex_pipe io_stderr */
-	lua_getfenv(L, -1);                         /* ex . io ex_pipe io_stderr E */
-	lua_setfenv(L, -3);                         /* ex . io ex_pipe io_stderr */
-
-	/* extend the io.file metatable */
-	luaL_getmetatable(L, LUA_FILEHANDLE);       /* ex . F  */
-	if (lua_isnil(L, -1)) return luaL_error(L, "can't find FILE* metatable");
-	copy_fields(L, ex_iofile_methods, 1, -1);   /* ex . F */
+	int ex;
+	const char *name = lua_tostring(L, 1);
 
 	/* diriter metatable */
-	luaL_newmetatable(L, DIR_HANDLE);           /* ex . D */
-	luaL_register(L, 0, ex_diriter_methods);    /* ex . D */
+	luaL_newmetatable(L, DIR_HANDLE);           /* . D */
+	luaL_register(L, 0, ex_diriter_methods);    /* . D */
 
 	/* proc metatable */
-	luaL_newmetatable(L, PROCESS_HANDLE);       /* ex . P */
-	copy_fields(L, ex_process_methods, 1, -1);  /* ex . P */
-	lua_setfield(L, -1, "__index");             /* ex . P */
+	luaL_newmetatable(L, PROCESS_HANDLE);       /* . P */
+	luaL_register(L, 0, ex_process_methods);    /* . P */
+	lua_pushvalue(L, -1);                       /* . P P */
+	lua_setfield(L, -2, "__index");             /* . P */
 
-	lua_settop(L, 1);                           /* ex */
+	/* make all functions available via ex. namespace */
+	luaL_register(L, name, ex_oslib);           /* . P ex */
+	luaL_register(L, 0, ex_iolib);
+	copyfields(L, ex_process_functions, -2, -1);
+	ex = lua_gettop(L);
+
+	/* extend the os table */
+	lua_getglobal(L, "os");                     /* . os */
+	if (lua_isnil(L, -1)) return luaL_error(L, "os not loaded");
+	copyfields(L, ex_oslib, ex, -1);
+	lua_getfield(L, -1, "remove");
+	lua_setfield(L, ex, "remove");
+
+	/* extend the io table */
+	lua_getglobal(L, "io");                     /* . io */
+	if (lua_isnil(L, -1)) return luaL_error(L, "io not loaded");
+	copyfields(L, ex_iolib, ex, -1);
+	lua_getfield(L, ex, "pipe");                /* . io ex_pipe */
+	lua_getfield(L, -2, "stderr");              /* . io ex_pipe io_stderr */
+	lua_getfenv(L, -1);                         /* . io ex_pipe io_stderr E */
+	lua_setfenv(L, -3);                         /* . io ex_pipe io_stderr */
+
+	/* extend the io.file metatable */
+	luaL_getmetatable(L, LUA_FILEHANDLE);       /* . F */
+	if (lua_isnil(L, -1)) return luaL_error(L, "can't find FILE* metatable");
+	copyfields(L, ex_iofile_methods, ex, -1);
+
 	return 1;
 }

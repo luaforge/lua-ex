@@ -1,4 +1,4 @@
-default:; @echo Choose a platform: mingw cygwin linux
+default:; @cat INSTALL
 all: mingw cygwin
 
 mingw:; $(MAKE) -C w32api ex.dll

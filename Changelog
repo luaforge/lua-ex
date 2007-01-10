@@ -1,3 +1,13 @@
+ex-20070110T1431-0700
+
+* new API for os.sleep
+
+ex-20070109T1403-0700
+
+* fixed build scripts
+
+* include Copyright notice
+
 ex-20070109
 
 API changes
