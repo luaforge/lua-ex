@@ -31,15 +31,13 @@ static int ex_getenv(lua_State *L)
 {
 	const char *nam = luaL_checkstring(L, 1);
 	char sval[256], *val = sval;
-	size_t len = GetEnvironmentVariable(nam, val, sizeof val);
+	size_t len = GetEnvironmentVariable(nam, val, sizeof sval);
 	if (sizeof sval < len) {
-		val = malloc(len);
-		len = GetEnvironmentVariable(nam, val, sizeof val);
+		len = GetEnvironmentVariable(nam, val = lua_newuserdata(len), len);
 	}
-	if (len == 0 && GetLastError() == ERROR_ENVVAR_NOT_FOUND)
+	if (len == 0)
 		return push_error(L);
 	lua_pushlstring(L, val, len);
-	if (val != sval) free(val);
 	return 1;
 }
 
@@ -144,14 +142,25 @@ static FILE **new_file(lua_State *L, HANDLE h, int dmode, const char *mode)
 	return pf;
 }
 
-#define file_handle(fp) (HANDLE)_get_osfhandle(fileno(fp))
+#define file_handle(fp) (HANDLE)_get_osfhandle(_fileno(fp))
 
+static lua_Number qword_to_number(DWORD hi, DWORD lo)
+{
+	/* lua_Number must be floating-point or as large or larger than
+	 * two DWORDs in order to be considered adequate for representing
+	 * large file sizes */
+	assert( hi == 0
+	        || (lua_Number)0.5 > 0
+	        || sizeof(lua_Number) > 2 * sizeof(DWORD)
+	        || !"lua_Number cannot adequately represent large file sizes" );
+	return hi * (1.0 + (DWORD)-1) + lo;
+}
 
-static uint64_t get_file_size(const char *name)
+static lua_Number get_file_size(const char *name)
 {
 	HANDLE h = CreateFile(name, GENERIC_READ, FILE_SHARE_READ, 0, OPEN_EXISTING, 0, 0);
 	DWORD lo, hi;
-	uint64_t size;
+	lua_Number size;
 	if (h == INVALID_HANDLE_VALUE)
 		size = 0;
 	else {
@@ -159,7 +168,7 @@ static uint64_t get_file_size(const char *name)
 		if (lo == INVALID_FILE_SIZE && GetLastError() != NO_ERROR)
 			size = 0;
 		else
-			size = hi; size <<= 32; size += lo;
+			size = qword_to_number(hi, lo);
 		CloseHandle(h);
 	}
 	return size;
@@ -188,14 +197,12 @@ static int ex_dirent(lua_State *L)
 		} break;
 	case LUA_TUSERDATA: {
 		FILE *f = check_file(L, 1, NULL);
-		uint64_t lsize;
 		BY_HANDLE_FILE_INFORMATION info;
 		if (!GetFileInformationByHandle(file_handle(f), &info))
 			return push_error(L);
 		attr = info.dwFileAttributes;
 		isdir = attr & FILE_ATTRIBUTE_DIRECTORY;
-		lsize = info.nFileSizeHigh; lsize <<= 32; lsize += info.nFileSizeLow;
-		size = lsize;
+		size = qword_to_number(info.nFileSizeHigh, info.nFileSizeLow);
 		} break;
 	}
 	if (lua_type(L, 2) != LUA_TTABLE) {

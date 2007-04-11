@@ -56,10 +56,10 @@ void spawn_param_filename(struct spawn_params *p, const char *filename)
 void spawn_param_args(struct spawn_params *p)
 {
 	lua_State *L = p->L;
-	debug("spawn_param_args:"); debug_stack(L);
-	luaL_Buffer args;
-	luaL_buffinit(L, &args);
 	size_t i, n = lua_objlen(L, -1);
+	luaL_Buffer args;
+	debug("spawn_param_args:"); debug_stack(L);
+	luaL_buffinit(L, &args);
 	/* concatenate the arg array to a string */
 	for (i = 1; i <= n; i++) {
 		int quote;
