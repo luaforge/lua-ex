@@ -30,11 +30,10 @@
 static int ex_getenv(lua_State *L)
 {
   const char *nam = luaL_checkstring(L, 1);
-  char sval[256], *val = sval;
-  size_t len = GetEnvironmentVariable(nam, val, sizeof sval);
-  if (sizeof sval < len) {
-    len = GetEnvironmentVariable(nam, val = lua_newuserdata(len), len);
-  }
+  char sval[256], *val;
+  size_t len = GetEnvironmentVariable(nam, val = sval, sizeof sval);
+  if (sizeof sval < len)
+    len = GetEnvironmentVariable(nam, val = lua_newuserdata(L, len), len);
   if (len == 0)
     return push_error(L);
   lua_pushlstring(L, val, len);
@@ -305,14 +304,16 @@ static int ex_dir(lua_State *L)
   /*NOTREACHED*/
 }
 
+static const ULARGE_INTEGER zero_len;
+static const OVERLAPPED zero_ov;
 
 static int file_lock(lua_State *L,
                      FILE *f, const char *mode, long offset, long length)
 {
   HANDLE h = file_handle(f);
   DWORD flags;
-  ULARGE_INTEGER len = {0};
-  OVERLAPPED ov = {0};
+  ULARGE_INTEGER len = zero_len;
+  OVERLAPPED ov = zero_ov;
   BOOL ret;
   if (length) len.LowPart = length;
   else len.LowPart = GetFileSize(h, &len.HighPart);
