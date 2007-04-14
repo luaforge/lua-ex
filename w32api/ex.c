@@ -311,23 +311,29 @@ static int file_lock(lua_State *L,
                      FILE *f, const char *mode, long offset, long length)
 {
   HANDLE h = file_handle(f);
-  DWORD flags;
   ULARGE_INTEGER len = zero_len;
   OVERLAPPED ov = zero_ov;
+  DWORD flags = 0;
   BOOL ret;
   if (length) len.LowPart = length;
-  else len.LowPart = GetFileSize(h, &len.HighPart);
+  else len.LowPart = len.HighPart = -1;
   ov.Offset = offset;
   switch (*mode) {
-    case 'w': flags = LOCKFILE_EXCLUSIVE_LOCK; /*FALLTHRU*/
-    case 'r': flags |= LOCKFILE_FAIL_IMMEDIATELY; break;
-    case 'u': flags = 0; break;
-    default: return luaL_error(L, "invalid mode");
+    case 'w':
+	  flags = LOCKFILE_EXCLUSIVE_LOCK;
+	  /*FALLTHRU*/
+    case 'r':
+	  flags |= LOCKFILE_FAIL_IMMEDIATELY;
+	  ret = LockFileEx(h, flags, 0, len.LowPart, len.HighPart, &ov);
+	  break;
+    case 'u':
+	  ret = UnlockFileEx(h, 0, len.LowPart, len.HighPart, &ov);
+	  break;
+    default:
+	  return luaL_error(L, "invalid mode");
   }
-  ret = flags ? LockFileEx(h, flags, 0, len.LowPart, len.HighPart, &ov)
-    : UnlockFileEx(h, 0, len.LowPart, len.HighPart, &ov);
-  if (!ret)
-    return push_error(L);
+  if (!ret) return push_error(L);
+  /* return the file */
   lua_settop(L, 1);
   return 1;
 }
