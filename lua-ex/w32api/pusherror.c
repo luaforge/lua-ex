@@ -18,33 +18,29 @@
  * nresults is -1 and error is NO_ERROR, then push true and return 1.
  * Otherwise, if error is NO_ERROR, return nresults.
  */
-int
-windows_pusherror(lua_State *L, DWORD error, int nresults)
+int windows_pusherror(lua_State *L, DWORD error, int nresults)
 {
-	if (error != NO_ERROR || nresults == -2) {
-		char buffer[1024];
-		size_t len, res;
-
-		len = sprintf(buffer, "%lu (0x%lX): ", error, error);
-
-		res = FormatMessage(
-			FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_SYSTEM,
-			0, error, 0, buffer + len, sizeof buffer - len, 0);
-		if (res) {
-			len += res;
-			while (len > 0 && isspace(buffer[len - 1]))
-				len--;
-		}
-		else
-			len += sprintf(buffer + len, "<error string not available>");
-
-		lua_pushnil(L);
-		lua_pushlstring(L, buffer, len);
-		nresults = 2;
-	}
-	else if (nresults < 0) {
-		lua_pushboolean(L, 1);
-		nresults = 1;
-	}
-	return nresults;
+  if (error != NO_ERROR || nresults == -2) {
+    char buffer[1024];
+    size_t len = sprintf(buffer, "%lu (0x%lX): ", error, error);
+    size_t res = FormatMessage(
+      FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_FROM_SYSTEM,
+      0, error, 0, buffer + len, sizeof buffer - len, 0);
+    if (res) {
+      len += res;
+      while (len > 0 && isspace(buffer[len - 1]))
+        len--;
+    }
+    else {
+      len += sprintf(buffer + len, "<error string not available>");
+    }
+    lua_pushnil(L);
+    lua_pushlstring(L, buffer, len);
+    nresults = 2;
+  }
+  else if (nresults < 0) {
+    lua_pushboolean(L, 1);
+    nresults = 1;
+  }
+  return nresults;
 }
