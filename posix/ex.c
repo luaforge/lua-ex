@@ -236,7 +236,7 @@ static int ex_dir(lua_State *L)
   case LUA_TUSERDATA:
     pd = luaL_checkudata(L, 1, DIR_HANDLE);
     do d = readdir(*pd);
-    while (d && isdotfile(d->d_name)) continue;
+    while (d && isdotfile(d->d_name));
     if (!d) return push_error(L);
     new_dirent(L);                      /* diriter ... entry */
     diriter_getpathname(L, 1);          /* diriter ... entry dir */
@@ -267,26 +267,27 @@ static int file_lock(lua_State *L,
   k.l_len = length;
   if (-1 == fcntl(fileno(f), F_SETLK, &k))
     return push_error(L);
+  /* return the file */
   lua_settop(L, 1);
   return 1;
 }
 
-/* file mode [offset [length]] -- file/nil error */
+static const char *opt_mode(lua_State *L, int *pidx)
+{
+  if (lua_type(L, *pidx) != LUA_TSTRING)
+    return "u";
+  return lua_tostring(L, (*pidx)++);
+}
+
+/* file [mode] [offset [length]] -- file/nil error */
 static int ex_lock(lua_State *L)
 {
   FILE *f = check_file(L, 1, NULL);
-  const char *mode = luaL_checkstring(L, 2);
-  long offset = luaL_optnumber(L, 3, 0);
-  long length = luaL_optnumber(L, 4, 0);
+  int argi = 2;
+  const char *mode = opt_mode(L, &argi);
+  long offset = luaL_optnumber(L, argi, 0);
+  long length = luaL_optnumber(L, argi + 1, 0);
   return file_lock(L, f, mode, offset, length);
-}
-
-/* file [offset [length]] -- file/nil error */
-static int ex_unlock(lua_State *L)
-{
-  lua_pushliteral(L, "u");
-  lua_insert(L, 2);
-  return ex_lock(L);
 }
 
 
@@ -432,7 +433,7 @@ int luaopen_ex(lua_State *L)
     {"pipe",       ex_pipe},
 #define ex_iofile_methods (ex_iolib + 1)
     {"lock",       ex_lock},
-    {"unlock",     ex_unlock},
+    {"unlock",     ex_lock},
     {0,0} };
   const luaL_reg ex_oslib[] = {
     /* environment */
