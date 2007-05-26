@@ -148,7 +148,7 @@ static lua_Number qword_to_number(DWORD hi, DWORD lo)
   /* lua_Number must be floating-point or as large or larger than
    * two DWORDs in order to be considered adequate for representing
    * large file sizes */
-  assert(hi == 0
+  lua_assert(hi == 0
          || (lua_Number)0.5 > 0
          || sizeof(lua_Number) > 2 * sizeof(DWORD)
          || !"lua_Number cannot adequately represent large file sizes" );
@@ -275,6 +275,8 @@ static int ex_dir(lua_State *L)
   const WIN32_FIND_DATA *d;
   switch (lua_type(L, 1)) {
   default: return luaL_typerror(L, 1, "pathname");
+  case LUA_TNONE:
+	lua_pushliteral(L, ".");
   case LUA_TSTRING:
     pathname = lua_tostring(L, 1);
     lua_pushcfunction(L, ex_dir);       /* pathname ... iter */
@@ -304,12 +306,12 @@ static int ex_dir(lua_State *L)
   /*NOTREACHED*/
 }
 
-static const ULARGE_INTEGER zero_len;
-static const OVERLAPPED zero_ov;
 
 static int file_lock(lua_State *L,
                      FILE *f, const char *mode, long offset, long length)
 {
+  static const ULARGE_INTEGER zero_len;
+  static const OVERLAPPED zero_ov;
   HANDLE h = file_handle(f);
   ULARGE_INTEGER len = zero_len;
   OVERLAPPED ov = zero_ov;
@@ -431,7 +433,7 @@ static int ex_spawn(lua_State *L)
   }
   params = spawn_param_init(L);
   /* get filename to execute */
-  spawn_param_filename(params, lua_tostring(L, 1));
+  spawn_param_filename(params);
   /* get arguments, environment, and redirections */
   if (have_options) {
     lua_getfield(L, 2, "args");         /* cmd opts ... argtab */

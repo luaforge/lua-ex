@@ -4,7 +4,7 @@ TARGET_ARCH= -mno-cygwin
 CFLAGS= $(WARNINGS) $(DEFINES) $(INCLUDES)
 DEFINES= -DWIN32_LEAN_AND_MEAN -DNOGDI
 INCLUDES= $(LUAINC)
-WARNINGS= -W -Wall -Wno-missing-braces
+WARNINGS= -W -Wall
 
 OBJS= ex.o spawn.o pusherror.o dirent.o
 LIBS= $(LUALIB)

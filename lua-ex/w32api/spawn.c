@@ -18,17 +18,36 @@
 
 #define file_handle(fp) (HANDLE)_get_osfhandle(fileno(fp))
 
-static int needs_quoting(const char *s)
-{
-  return s[0] != '"' && strchr(s, ' ');
-}
-
 struct spawn_params {
   lua_State *L;
   const char *cmdline;
   const char *environment;
   STARTUPINFO si;
 };
+
+/* quotes and adds argument string to b */
+static int add_argument(luaL_Buffer *b, const char *s) {
+  int oddbs = 0;
+  luaL_addchar(b, '"');
+  for (; *s; s++) {
+    switch (*s) {
+    case '\\':
+      luaL_addchar(b, '\\');
+      oddbs = !oddbs;
+      break;
+    case '"':
+      luaL_addchar(b, '\\');
+      oddbs = 0;
+      break;
+    default:
+      oddbs = 0;
+      break;
+    }
+    luaL_addchar(b, *s);
+  }
+  luaL_addchar(b, '"');
+  return oddbs;
+}
 
 struct spawn_params *spawn_param_init(lua_State *L)
 {
@@ -40,71 +59,85 @@ struct spawn_params *spawn_param_init(lua_State *L)
   return p;
 }
 
-void spawn_param_filename(struct spawn_params *p, const char *filename)
+/* cmd ... -- cmd ... */
+void spawn_param_filename(struct spawn_params *p)
 {
-  p->cmdline = filename;
-  if (needs_quoting(p->cmdline)) {
-    lua_pushliteral(p->L, "\"");        /* cmd ... q */
-    lua_pushstring(p->L, p->cmdline);   /* cmd ... q cmd */
-    lua_pushvalue(p->L, -2);            /* cmd ... q cmd q */
-    lua_concat(p->L, 3);                /* cmd ... "cmd" */
-    p->cmdline = lua_tostring(p->L, -1);
+  lua_State *L = p->L;
+  luaL_Buffer b;
+  luaL_buffinit(L, &b);
+  if (add_argument(&b, lua_tostring(L, 1))) {
+    luaL_error(L, "argument ends in odd number of backslashes");
+    return;
   }
+  luaL_pushresult(&b);
+  lua_replace(L, 1);
+  p->cmdline = lua_tostring(L, 1);
 }
 
-/* cmd opts ... argtab -- cmd opts ... cmdline */
+/* cmd ... argtab -- cmdline ... */
 void spawn_param_args(struct spawn_params *p)
 {
   lua_State *L = p->L;
-  size_t i, n = lua_objlen(L, -1);
-  luaL_Buffer args;
+  int argtab = lua_gettop(L);
+  size_t i, n = lua_objlen(L, argtab);
+  luaL_Buffer b;
   debug("spawn_param_args:"); debug_stack(L);
-  luaL_buffinit(L, &args);
+  lua_pushnil(L);                 /* cmd opts ... argtab nil */
+  luaL_buffinit(L, &b);           /* cmd opts ... argtab nil b... */
+  lua_pushvalue(L, 1);            /* cmd opts ... argtab nil b... cmd */
+  luaL_addvalue(&b);              /* cmd opts ... argtab nil b... */
   /* concatenate the arg array to a string */
   for (i = 1; i <= n; i++) {
-    int quote;
-    lua_rawgeti(L, -1, i);        /* ... argtab arg */
+    const char *s;
+    lua_rawgeti(L, argtab, i);    /* cmd opts ... argtab nil b... arg */
+    lua_replace(L, argtab + 1);   /* cmd opts ... argtab arg b... */
+    luaL_addchar(&b, ' ');
     /* XXX checkstring is confusing here */
-    quote = needs_quoting(luaL_checkstring(L, -1));
-    luaL_putchar(&args, ' ');
-    if (quote) luaL_putchar(&args, '"');
-    luaL_addvalue(&args);
-    if (quote) luaL_putchar(&args, '"');
-    lua_pop(L, 1);                /* ... argtab */
+    s = lua_tostring(L, argtab + 1);
+    if (!s) {
+      luaL_error(L, "expected string for argument %d, got %s",
+                 i, lua_typename(L, lua_type(L, argtab + 1)));
+      return;
+    }
+    add_argument(&b, luaL_checkstring(L, argtab + 1));
   }
-  luaL_pushresult(&args);         /* ... argtab argstr */
-  lua_pushvalue(L, 1);            /* cmd opts ... argtab argstr cmd */
-  lua_insert(L, -2);              /* cmd opts ... argtab cmd argstr */
-  lua_concat(L, 2);               /* cmd opts ... argtab cmdline */
-  lua_replace(L, -2);             /* cmd opts ... cmdline */
-  p->cmdline = lua_tostring(L, -1);
+  luaL_pushresult(&b);            /* cmd opts ... argtab arg cmdline */
+  lua_replace(L, 1);              /* cmdline opts ... argtab arg */
+  lua_pop(L, 2);                  /* cmdline opts ... */
+  p->cmdline = lua_tostring(L, 1);
 }
 
-/* ... envtab/nil */
+/* ... tab nil nil [...] -- ... tab envstr */
+static char *add_env(lua_State *L, int tab, size_t where) {
+  char *t;
+  lua_checkstack(L, 2);
+  lua_pushvalue(L, -2);
+  if (lua_next(L, tab)) {
+    size_t klen, vlen;
+    const char *key = lua_tolstring(L, -2, &klen);
+    const char *val = lua_tolstring(L, -1, &vlen);
+    t = add_env(L, tab, where + klen + vlen + 2);
+    memcpy(&t[where], key, klen);
+    t[where += klen] = '=';
+    memcpy(&t[where + 1], val, vlen + 1);
+  }
+  else {
+    t = lua_newuserdata(L, where + 1);
+    t[where] = '\0';
+    lua_replace(L, tab + 1);
+  }
+  return t;
+}
+
+/* ... envtab -- ... envtab envstr */
 void spawn_param_env(struct spawn_params *p)
 {
   lua_State *L = p->L;
-  luaL_Buffer env;
-  /* convert env table to zstring list */
-  /* {nam1=val1,nam2=val2} => "nam1=val1\0nam2=val2\0\0" */
-  luaL_buffinit(L, &env);
-  lua_pushnil(L);                       /* ... envtab nil */
-  while (lua_next(L, -2)) {             /* ... envtab k v */
-    /* XXX luaL_checktype is confusing here */
-    luaL_checktype(L, -2, LUA_TSTRING);
-    luaL_checktype(L, -1, LUA_TSTRING);
-    lua_pushvalue(L, -2);               /* ... envtab k v k */
-    luaL_addvalue(&env);
-    luaL_putchar(&env, '=');
-    lua_pop(L, 1);                      /* ... envtab k v */
-    luaL_addvalue(&env);
-    luaL_putchar(&env, '\0');
-    lua_pop(L, 1);                      /* ... envtab k */
-  }
-  luaL_putchar(&env, '\0');
-  luaL_pushresult(&env);                /* ... envtab envstr */
-  lua_replace(L, -2);                   /* ... envtab envstr */
-  p->environment = lua_tostring(L, -1);
+  int envtab = lua_gettop(L);
+  lua_pushnil(L);
+  lua_pushnil(L);
+  p->environment = add_env(L, envtab, 0);
+  lua_settop(L, envtab + 1);
 }
 
 void spawn_param_redirect(struct spawn_params *p, const char *stdname, HANDLE h)
