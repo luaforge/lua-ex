@@ -237,7 +237,7 @@ static int ex_dir(lua_State *L)
     pd = luaL_checkudata(L, 1, DIR_HANDLE);
     do d = readdir(*pd);
     while (d && isdotfile(d->d_name));
-    if (!d) return push_error(L);
+    if (!d) { diriter_close(L); return push_error(L); }
     new_dirent(L);                      /* diriter ... entry */
     diriter_getpathname(L, 1);          /* diriter ... entry dir */
     lua_pushstring(L, d->d_name);       /* diriter ... entry dir name */

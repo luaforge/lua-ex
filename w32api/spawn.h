@@ -14,7 +14,7 @@ struct process;
 struct spawn_params;
 
 struct spawn_params *spawn_param_init(lua_State *L);
-void spawn_param_filename(struct spawn_params *p, const char *filename);
+void spawn_param_filename(struct spawn_params *p);
 void spawn_param_args(struct spawn_params *p);
 void spawn_param_env(struct spawn_params *p);
 void spawn_param_redirect(

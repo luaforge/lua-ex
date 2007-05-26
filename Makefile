@@ -8,3 +8,4 @@ linux:; $(MAKE) -C posix ex.so
 clean:
 	$(MAKE) -C posix clean
 	$(MAKE) -C w32api clean
+
