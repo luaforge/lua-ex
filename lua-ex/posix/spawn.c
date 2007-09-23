@@ -57,7 +57,7 @@ static const char **make_vector(lua_State *L)
   for (i = 0; i <= n; i++) {
     lua_rawgeti(L, -2, i);              /* ... arr vec elem */
     vec[i] = lua_tostring(L, -1);
-    if (!vec[i]) {
+    if (!vec[i] && i > 0) {
       luaL_error(L, "expected string for argument %d, got %s",
                  i, lua_typename(L, lua_type(L, -1)));
       return 0;
@@ -85,7 +85,7 @@ void spawn_param_env(struct spawn_params *p)
   lua_newtable(L);                      /* ... envtab arr */
   lua_pushliteral(L, "=");              /* ... envtab arr "=" */
   lua_pushnil(L);                       /* ... envtab arr "=" nil */
-  for (i = 0; lua_next(L, -3); i++) {   /* ... envtab arr "=" k v */
+  for (i = 0; lua_next(L, -4); i++) {   /* ... envtab arr "=" k v */
     if (!lua_tostring(L, -2)) {
       luaL_error(L, "expected string for environment variable name, got %s",
                  lua_typename(L, lua_type(L, -2)));
@@ -97,14 +97,14 @@ void spawn_param_env(struct spawn_params *p)
       return;
     }
     lua_pushvalue(L, -2);               /* ... envtab arr "=" k v k */
-    lua_pushvalue(L, -5);               /* ... envtab arr "=" k v k "=" */
+    lua_pushvalue(L, -4);               /* ... envtab arr "=" k v k "=" */
     lua_pushvalue(L, -3);               /* ... envtab arr "=" k v k "=" v */
     lua_concat(L, 3);                   /* ... envtab arr "=" k v "k=v" */
-    lua_rawseti(L, -4, i);              /* ... envtab arr "=" k v */
+    lua_rawseti(L, -5, i);              /* ... envtab arr "=" k v */
     lua_pop(L, 1);                      /* ... envtab arr "=" k */
   }                                     /* ... envtab arr "=" */
   lua_pop(L, 1);                        /* ... envtab arr */
-  make_vector(L);                       /* ... envtab arr vector */
+  p->envp = make_vector(L);             /* ... envtab arr vector */
 }
 
 void spawn_param_redirect(struct spawn_params *p, const char *stdname, int fd)
