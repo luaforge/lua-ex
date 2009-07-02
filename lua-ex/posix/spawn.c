@@ -1,16 +1,17 @@
 /*
  * "ex" API implementation
  * http://lua-users.org/wiki/ExtensionProposal
- * Copyright 2007 Mark Edgar < medgar at student gc maricopa edu >
+ * Copyright 2007 Mark Edgar < medgar at gmail com >
  */
 #include <unistd.h>
-ENVIRON_DECL
 #include <sys/wait.h>
 #if MISSING_POSIX_SPAWN
 #include "posix_spawn.h"
 #else
 #include <spawn.h>
 #endif
+
+#include "environ.h"
 
 #include "lua.h"
 #include "lauxlib.h"

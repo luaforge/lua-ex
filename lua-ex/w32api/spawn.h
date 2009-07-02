@@ -1,7 +1,7 @@
 /*
  * "ex" API implementation
  * http://lua-users.org/wiki/ExtensionProposal
- * Copyright 2007 Mark Edgar < medgar at student gc maricopa edu >
+ * Copyright 2007 Mark Edgar < medgar at gmail com >
  */
 #ifndef SPAWN_H
 #define SPAWN_H

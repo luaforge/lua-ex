@@ -10,8 +10,3 @@ LUALIB= -L$(LUA)/src -llua51
 ### Comment these if your system actually has posix_spawn()
 POSIX_SPAWN= -DMISSING_POSIX_SPAWN
 EXTRA= posix_spawn.o
-
-### Change this if your system properly declares environ.
-#ENVIRON= -DENVIRON_DECL=
-ENVIRON= -DENVIRON_DECL="extern char **environ;"
-
