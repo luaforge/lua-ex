@@ -1,17 +1,17 @@
 /*
  * "ex" API implementation
  * http://lua-users.org/wiki/ExtensionProposal
- * Copyright 2007 Mark Edgar < medgar at student gc maricopa edu >
+ * Copyright 2007 Mark Edgar < medgar at gmail com >
  */
 #include <stdlib.h>
 #include <assert.h>
 #include <errno.h>
 
 #include <unistd.h>
-ENVIRON_DECL
 #include <limits.h>
 #include <sys/types.h>
 
+#include "environ.h"
 #include "posix_spawn.h"
 
 #ifndef OPEN_MAX
